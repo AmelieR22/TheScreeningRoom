@@ -1,0 +1,220 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>The Screening Room</title>
+    <meta
+      name="description"
+      content="The Screening Room — independent cinema, premium recommendations, graph insights, and a concierge for film discovery."
+    />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@400;500;600;700&family=Inter:wght@400;500;600;700;800&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="/static/styles.css" />
+  </head>
+  <body>
+    <div class="page-shell">
+      <header class="site-header">
+        <div class="brand-block">
+          <span class="brand-mark">TSR</span>
+          <div>
+            <p class="eyebrow">Independent film club</p>
+            <h1>The Screening Room</h1>
+          </div>
+        </div>
+        <nav class="top-nav" aria-label="Primary navigation">
+          <a href="#popular">Popular</a>
+          <a href="#hidden-gems">Hidden Gems</a>
+          <a href="#personalized">For You</a>
+          <a href="#analytics">Graph Insights</a>
+          <a href="#concierge">Concierge</a>
+        </nav>
+      </header>
+
+      <main>
+        <section class="hero panel">
+          <div class="hero-copy">
+            <p class="eyebrow accent">Curated for thoughtful viewers</p>
+            <h2>Discover cinema worth lingering over.</h2>
+            <p>
+              A private film society for modern audiences — blending award-season favorites,
+              under-the-radar treasures, and graph-powered movie discovery.
+            </p>
+            <div class="cta-row">
+              <a class="primary-btn" href="#popular">Browse the vault</a>
+              <a class="secondary-btn" href="#concierge">Ask the concierge</a>
+            </div>
+          </div>
+          <div class="hero-metrics" aria-label="The Screening Room stats">
+            <div class="metric">
+              <span>1,000+</span>
+              <label>Film titles</label>
+            </div>
+            <div class="metric">
+              <span>12</span>
+              <label>Curated moods</label>
+            </div>
+            <div class="metric">
+              <span>24/7</span>
+              <label>Night screening</label>
+            </div>
+          </div>
+        </section>
+
+        <section id="popular" class="content-section">
+          <div class="section-heading">
+            <div>
+              <p class="eyebrow">House favorites</p>
+              <h3>Popular now</h3>
+            </div>
+            <button class="mini-button" data-refresh="popular">Refresh</button>
+          </div>
+          <div id="popular-results" class="movie-grid" aria-live="polite"></div>
+        </section>
+
+        <section id="hidden-gems" class="content-section">
+          <div class="section-heading">
+            <div>
+              <p class="eyebrow">Award-worthy finds</p>
+              <h3>Hidden gems</h3>
+            </div>
+            <button class="mini-button" data-refresh="hidden-gems">Refresh</button>
+          </div>
+          <div id="hidden-gems-results" class="movie-grid" aria-live="polite"></div>
+        </section>
+
+        <section id="personalized" class="content-section two-column">
+          <div class="panel block">
+            <div class="section-heading compact">
+              <div>
+                <p class="eyebrow">For you</p>
+                <h3>Personalized picks</h3>
+              </div>
+            </div>
+            <form id="personalized-form" class="query-form">
+              <label for="userIdInput">User ID</label>
+              <div class="input-row">
+                <input id="userIdInput" type="number" min="1" step="1" placeholder="e.g. 42" required />
+                <button type="submit">Load</button>
+              </div>
+            </form>
+            <div id="personalized-results" class="movie-grid compact-grid" aria-live="polite"></div>
+          </div>
+
+          <div class="panel block">
+            <div class="section-heading compact">
+              <div>
+                <p class="eyebrow">Find a match</p>
+                <h3>Similar movies</h3>
+              </div>
+            </div>
+            <form id="similar-form" class="query-form">
+              <label for="movieIdInput">Movie ID</label>
+              <div class="input-row">
+                <input id="movieIdInput" type="number" min="1" step="1" placeholder="e.g. 1" required />
+                <button type="submit">Search</button>
+              </div>
+            </form>
+            <div id="similar-results" class="movie-grid compact-grid" aria-live="polite"></div>
+          </div>
+        </section>
+
+        <section id="concierge" class="content-section concierge-section">
+          <div class="section-heading">
+            <div>
+              <p class="eyebrow">Private concierge</p>
+              <h3>Ask the movie desk</h3>
+            </div>
+          </div>
+
+          <div class="chat-panel panel">
+            <div id="chat-messages" class="chat-messages" aria-live="polite">
+              <div class="chat-message bot">
+                <p>Welcome to The Screening Room. Ask for a genre, a user suggestion, or a film detail.</p>
+              </div>
+            </div>
+
+            <form id="assistant-form" class="assistant-form">
+              <input
+                id="assistant-input"
+                type="text"
+                placeholder="Ask for comedy picks, top romance titles, or recommendations for user 42"
+                aria-label="Ask the movie assistant"
+                maxlength="500"
+              />
+              <button type="submit">Send</button>
+            </form>
+          </div>
+        </section>
+
+        <section id="analytics" class="content-section analytics-section">
+          <div class="section-heading">
+            <div>
+              <p class="eyebrow">Graph insights</p>
+              <h3>Audience connections</h3>
+            </div>
+          </div>
+
+          <div class="analytics-grid">
+            <div class="panel block">
+              <div class="section-heading compact">
+                <div>
+                  <p class="eyebrow">Taste overlap</p>
+                  <h4>Similar users</h4>
+                </div>
+              </div>
+              <form id="similar-users-form" class="query-form small-form">
+                <label for="analyticsUserInput">User ID</label>
+                <div class="input-row">
+                  <input id="analyticsUserInput" type="number" min="1" step="1" placeholder="User ID" required />
+                  <button type="submit">Reveal</button>
+                </div>
+              </form>
+              <div id="similar-users-results" class="list-stack" aria-live="polite"></div>
+            </div>
+
+            <div class="panel block">
+              <div class="section-heading compact">
+                <div>
+                  <p class="eyebrow">Community map</p>
+                  <h4>Viewer groups</h4>
+                </div>
+              </div>
+              <div id="communities-results" class="list-stack" aria-live="polite"></div>
+            </div>
+          </div>
+        </section>
+
+        <section class="content-section path-section">
+          <div class="section-heading">
+            <div>
+              <p class="eyebrow">Network view</p>
+              <h3>Path explorer</h3>
+            </div>
+          </div>
+
+          <div class="panel block path-panel">
+            <form id="path-form" class="query-form path-form">
+              <div>
+                <label for="pathUserOne">User A</label>
+                <input id="pathUserOne" type="number" min="1" step="1" placeholder="User ID" required />
+              </div>
+              <div>
+                <label for="pathUserTwo">User B</label>
+                <input id="pathUserTwo" type="number" min="1" step="1" placeholder="User ID" required />
+              </div>
+              <button type="submit">Find connection</button>
+            </form>
+            <div id="path-results" class="path-results" aria-live="polite"></div>
+          </div>
+        </section>
+      </main>
+    </div>
+
+    <script src="/static/script.js"></script>
+  </body>
+</html>

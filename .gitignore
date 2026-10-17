@@ -1,0 +1,48 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.pyc
+*.egg-info/
+.venv/
+venv/
+.env
+.env.*
+!.env.example
+
+# VS Code
+.vscode/
+
+# Testing and coverage
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+
+# Build and tooling
+build/
+dist/
+*.log
+.mypy_cache/
+.pdm-build/
+
+# Data and generated files
+/data/
+!data/.gitkeep
+*.csv
+*.tsv
+*.json
+*.parquet
+*.zip
+*.db
+*.sqlite3
+
+# Neo4j / Docker volumes
+neo4j_data/
+neo4j_import/
+neo4j_logs/
+
+# OS files
+.DS_Store
+Thumbs.db
