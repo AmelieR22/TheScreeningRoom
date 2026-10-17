@@ -1,70 +1,173 @@
 # The Screening Room
 
-The Screening Room is a Python-based movie recommendation application that uses Neo4j, FastAPI, and the MovieLens latest-small dataset. It is designed as a university Graph Databases project with a modular structure for future recommendation features, graph analysis, and personalized user experiences.
+The Screening Room is a Python-based movie recommendation application built on FastAPI, Neo4j, and the MovieLens latest-small dataset. The project is a graph-first recommendation and analytics application for exploring movie similarity, user communities, shortest-path relationships, and a read-only movie assistant.
+
+## Verified Part 1 features
+
+The following capabilities are implemented and verified in the current project state:
+
+- Neo4j MovieLens ingestion and graph schema setup
+- FastAPI endpoints for recommendations, pathfinding, and analytics
+- GDS projection creation using the official Neo4j Graph Data Science plugin
+- User similarity using GDS node similarity
+- Community detection using GDS Louvain
+- Shortest-path queries for user-to-user and user-to-movie paths
+- Read-only movie assistant with allowlisted Cypher templates and Ollama integration
+- Responsive frontend served from the root path
+- Test coverage, lint validation, and Docker startup verification
+
+## Planned Part 2 features
+
+The following items are not part of the verified Part 1 submission and are explicitly future scope:
+
+- Social graph features and user-to-user social interactions
+- Advanced collaborative filtering beyond the current graph-based recommendation layer
+- Product-grade personalization beyond the implemented historical rating logic
+- Expanded assistant workflows beyond the strict allowlisted read-only design
+- Additional recommendation experiments and longer-term user engagement features
 
 ## Architecture
 
-- `app/`: FastAPI application code
-- `database/`: Neo4j scripts and database utilities
-- `tests/`: automated tests
-- `data/`: local dataset storage and generated outputs
-- `documentation/`: design notes and project docs
-- `notebooks/`: exploratory notebooks for analysis and experimentation
+```mermaid
+flowchart LR
+    Browser[Browser / Frontend] --> API[FastAPI app\napp/main.py]
+    API --> Neo4j[Neo4j MovieLens graph\nUser, Movie, Genre\nRATED, TAGGED, IN_GENRE]
+    API --> GDS[GDS analytics\nNode Similarity + Louvain]
+    API --> Ollama[Ollama\nqwen2.5:1.5b]
+    Neo4j --> Data[MovieLens import pipeline]
+```
 
-## Planned features
+The browser calls the FastAPI application for homepage rendering, recommendations, graph analytics, and assistant queries. Neo4j stores the MovieLens graph and the GDS projection. The assistant service calls a local Ollama instance for classification, but only uses allowlisted read-only Cypher templates.
 
-- Personalized movie recommendations
-- Similar movies based on graph relationships
-- Popular film summaries
-- Hidden-gem discovery
-- User communities with similar tastes
-- Optional natural-language assistant support
+## Graph schema
 
-## Windows setup
+```mermaid
+erDiagram
+    USER ||--o{ RATED : rates
+    MOVIE ||--o{ RATED : receives
+    MOVIE ||--o{ IN_GENRE : tagged_with
+    GENRE ||--o{ IN_GENRE : labels
+    USER ||--o{ TAGGED : tags
+    MOVIE ||--o{ TAGGED : is_tagged
+
+    USER {
+      int userId
+    }
+
+    MOVIE {
+      int movieId
+      string title
+      int year
+    }
+
+    GENRE {
+      string name
+    }
+
+    RATED {
+      float rating
+      int timestamp
+    }
+
+    TAGGED {
+      string tag
+      int timestamp
+    }
+```
+
+Core entities:
+
+- User: a MovieLens user node with a unique userId
+- Movie: a title, year, and unique movieId
+- Genre: a movie genre label such as Comedy, Drama, or Sci-Fi
+- Relationships:
+  - RATED: user -> movie with rating and timestamp
+  - TAGGED: user -> movie with tag and timestamp
+  - IN_GENRE: movie -> genre
+
+## Project structure
+
+- app/: FastAPI application code and frontend assets
+- database/scripts/: MovieLens import and verification scripts
+- tests/: automated tests
+- documentation/: architecture and project notes
+- notebooks/: demo and exploratory notebooks
+- data/: local dataset storage and generated outputs
+
+## Setup and environment
+
+### Windows PowerShell
 
 1. Install Python 3.13.
-2. Install Docker Desktop and ensure Linux containers are enabled.
-3. Clone the project and open it in VS Code.
+2. Install Docker Desktop and enable Linux containers.
+3. Clone the repository and open it in VS Code.
 4. Create a virtual environment:
    python -m venv .venv
 5. Activate the environment:
-   .venv\Scripts\activate
-6. Install the project dependencies:
-   pip install -r requirements.txt
-7. Copy `.env.example` to `.env` and update values as needed.
-8. Start services with Docker Compose when ready:
+   .\.venv\Scripts\Activate.ps1
+6. Install dependencies:
+   python -m pip install -r requirements.txt
+7. Copy the example environment file:
+   Copy-Item .env.example .env
+8. Review .env and update local values if needed.
+9. Start the stack:
    docker compose up --build
 
-## Importing the MovieLens data
+### Local service startup
 
-After Docker Desktop is running and Neo4j is started, follow these PowerShell steps from the project root.
+When running the app directly on a Windows host, use the local Neo4j and Ollama addresses:
 
-1. Create and update your local environment file:
-   Copy-Item .env.example .env
-   notepad .env
+- Neo4j: bolt://localhost:7687
+- Ollama: http://localhost:11434
 
-2. Make sure your Neo4j credentials are set correctly in `.env`.
-   Example values:
-   NEO4J_URI=bolt://localhost:7687
-   NEO4J_USER=neo4j
-   NEO4J_PASSWORD=change_me
-   NEO4J_DATABASE=neo4j
+Inside Docker Compose, the app connects to the internal service addresses:
 
-3. Activate the virtual environment:
+- Neo4j: bolt://neo4j:7687
+- Ollama: http://ollama:11434
+
+### Environment variables
+
+The application expects these variables in the environment or in .env:
+
+- NEO4J_URI
+- NEO4J_USER
+- NEO4J_PASSWORD
+- NEO4J_DATABASE
+- OLLAMA_BASE_URL
+- OLLAMA_MODEL
+- APP_HOST
+- APP_PORT
+
+The .env example file contains placeholders only. Do not add real credentials to source control.
+
+## MovieLens import
+
+The project includes a standard MovieLens import pipeline in [database/scripts/import_movielens.py](database/scripts/import_movielens.py).
+
+### Import process
+
+1. Load Movies, Ratings, and Tags CSV files from the local MovieLens dataset.
+2. Create unique constraints for User, Movie, and Genre nodes.
+3. Merge each Movie and its Genre labels.
+4. Merge User nodes and RATED relationships with movie ratings.
+5. Merge TAGGED relationships for user-created tags.
+
+### PowerShell import steps
+
+From the project root:
+
+1. Activate the environment:
    .\.venv\Scripts\Activate.ps1
-
-4. Install dependencies if needed:
-   python -m pip install -r requirements.txt
-
-5. Run the import script:
+2. Set the Neo4j password for your session if needed:
+   $env:NEO4J_PASSWORD="change_me"
+3. Run the importer:
    python .\database\scripts\import_movielens.py
-
-6. Verify that the import worked:
+4. Verify the graph:
    python .\database\scripts\verify_import.py
 
-## Verification output
+### Import verification output
 
-The verification script will print:
+The validation script reports expected totals such as:
 
 - total users
 - total movies
@@ -73,218 +176,246 @@ The verification script will print:
 - total tagged relationships
 - sample movie records
 
-This helps confirm that the Neo4j graph was populated correctly and that the import is idempotent when run again.
-
-## Recommendation engine
-
-The recommendation service uses the existing Neo4j graph and is designed to be beginner-friendly.
-
-### Scoring approach
-
-- `get_popular_movies(limit=10)`: ranks movies by average rating and number of ratings, with a minimum threshold of 20 ratings. This is historical MovieLens popularity, not live trend detection.
-- `get_hidden_gems(limit=10)`: looks for movies with strong average ratings but fewer ratings, using a minimum threshold to reduce noise.
-- `get_similar_movies(movie_id, limit=10)`: combines shared genres and overlapping user relationships to find related titles.
-- `get_personalized_recommendations(user_id, limit=10)`: finds users with similar tastes and recommends movies they liked but the target user has not rated yet.
-
-### PowerShell usage
-
-From the project root:
-
-1. Activate the virtual environment:
-   .\.venv\Scripts\Activate.ps1
-
-2. Run the unit tests:
-   python -m pytest tests/test_recommendation_service.py -q
-
-3. Run the recommendation demo script:
-   $env:NEO4J_PASSWORD="change_me"
-   python .\demo_recommendations.py
-
-4. If you want to inspect the graph manually, open Neo4j Browser at:
-   http://localhost:7474
-
-### Important notes
-
-- Do not reset or reimport the Neo4j database unless you explicitly want to rebuild the graph.
-- The service expects the imported MovieLens data already to be present in Neo4j.
-- The recommendation methods validate user IDs, movie IDs and limits before running queries.
-
-## GDS graph analytics
-
-The project also includes a beginner-friendly Neo4j GDS analytics layer for user similarity and community detection.
-
-### Shortest-path connectivity
-
-The analytics service also supports read-only shortest-path lookups using Neo4j `shortestPath` over `RATED` relationships in either direction. These endpoints use a bounded max hop count of 6 and never modify the database.
-
-- `GET /analytics/path/users/{user_id_1}/{user_id_2}` — find the shortest connection between two users using shared movies
-- `GET /analytics/path/user-movie/{user_id}/{movie_id}` — find the shortest connection between a user and a movie
-
-Each response includes an ordered list of path nodes, relationship metadata, and the hop count. If no path exists, the response returns a clean “not found” structure instead of an exception.
-
-### GDS setup
-
-The Neo4j Docker service includes the official Graph Data Science plugin. In the Compose configuration, the Neo4j container enables the plugin with:
-
-- `NEO4J_PLUGINS: '["graph-data-science"]'`
-- `NEO4J_dbms_security_procedures_unrestricted: "gds.*"`
-
-This is the official GDS plugin for Neo4j 5.25.
-
-### Graph analytics service
-
-The analytics service reuses the same Neo4j driver pattern as the recommendation service and creates the in-memory projection `screening-room-ratings` if it does not already exist. The projection uses the existing `User` and `Movie` nodes and projects the `RATED` relationships as `UNDIRECTED` to support similarity and community queries.
-
-It provides:
-
-- `get_similar_users(user_id, limit=5)`: uses GDS `nodeSimilarity.stream` to find users with similar preferences.
-- `get_user_communities(limit=10)`: uses GDS `louvain.stream` to group users into communities.
-
-The service gracefully returns an empty list if GDS is unavailable or the projection cannot be created, without modifying the MovieLens graph data.
+This verifies that the graph was populated correctly and matches the expected MovieLens dataset structure.
 
 ## API endpoints
 
-The FastAPI app exposes the recommendation endpoints below.
+The FastAPI service exposes the following verified routes:
 
-- `GET /health` — health check
-- `GET /recommendations/popular?limit=10` — top movies by historical popularity
-- `GET /recommendations/hidden-gems?limit=10` — highly rated movies with fewer ratings
-- `GET /recommendations/similar/{movie_id}?limit=10` — similar movies based on genres and audience overlap
-- `GET /recommendations/personalized/{user_id}?limit=10` — collaborative recommendations and fallback recommendations
-- `GET /analytics/similar-users/{user_id}?limit=5` — users most similar to the target user via GDS node similarity
-- `GET /analytics/communities?limit=10` — user communities discovered by GDS Louvain
+- GET /health — service health check
+- GET /recommendations/popular?limit=10 — popular movies by average rating and count
+- GET /recommendations/hidden-gems?limit=10 — highly rated movies with relatively few ratings
+- GET /recommendations/similar/{movie_id}?limit=10 — similar movies using shared genres and audience overlap
+- GET /recommendations/personalized/{user_id}?limit=10 — collaborative filtering with fallback
+- GET /analytics/similar-users/{user_id}?limit=5 — GDS node-similarity user scores
+- GET /analytics/communities?limit=10 — GDS Louvain communities
+- GET /analytics/path/users/{user_id_1}/{user_id_2} — shortest user-to-user path
+- GET /analytics/path/user-movie/{user_id}/{movie_id} — shortest user-to-movie path
+- POST /assistant/ask — allowlisted question-to-query assistant
 
-### Local API run (PowerShell)
+### Local FastAPI run
 
 From the project root:
 
 1. Activate the environment:
    .\.venv\Scripts\Activate.ps1
-
-2. Set the Neo4j password for the session:
-   $env:NEO4J_PASSWORD="change_me"
-
-3. Start the FastAPI app with Uvicorn:
+2. Start the service:
    uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
-
-4. Open the website:
+3. Open the website:
    http://localhost:8000/
-
-5. Open the Swagger UI:
+4. Open the API docs:
    http://localhost:8000/docs
 
-## Website frontend
+## Recommendation algorithms
 
-The project now includes a premium, responsive movie-club landing page served by FastAPI at the root path. The front end uses vanilla HTML, CSS, and JavaScript and communicates with the existing API via relative URLs, so it works both locally and inside the Docker setup without adding React or any frontend build tooling.
+The recommendation service uses the imported graph structure and keeps the logic readable and beginner-friendly.
 
-### What is included
+### Popular movies
 
-- Hero section and cinematic brand styling
-- Popular movies and hidden gems carousels/cards
-- Personalized recommendations driven by a numeric user ID
-- Similar-movie lookup driven by a numeric movie ID
-- Concierge chat panel for the read-only assistant at `POST /assistant/ask`
-- Graph insights for similar users and communities
-- User-to-user shortest-path explorer
-- Loading states, friendly errors, and empty-state messaging
+The popular list ranks movies by:
 
-### Files added/updated
+- average rating
+- rating count
+- minimum threshold of 20 ratings
 
-- `app/main.py` — serves the homepage and mounts static assets
-- `app/templates/index.html` — the full interface layout
-- `app/static/styles.css` — premium editorial styling and responsiveness
-- `app/static/script.js` — client-side fetch logic, rendering, and interactivity
-- `tests/test_app_endpoints.py` — smoke test for the homepage route
-- `README.md` — launch and viewing instructions
+This is a historical popularity view based on MovieLens ratings, not a live trending feed.
 
-### How to view the site
+### Hidden gems
 
-1. Activate the project environment.
-2. Start the app with:
-   uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
-3. Open:
-   http://localhost:8000/
+The hidden-gem query looks for movies with:
 
-The site is intentionally designed to work with the existing backend endpoints without changing the recommendation or analytics logic.
+- strong average rating
+- relatively low rating volume
+- minimum rating count threshold to avoid unstable results
 
-### Example requests
+### Similar movies
 
+The similar-movie query blends:
+
+- Jaccard-style genre similarity
+- audience overlap among raters
+
+It returns a weighted similarity score and explanatory text.
+
+### Personalized recommendations
+
+The personalized recommendation logic:
+
+- compares a target user to similar users
+- identifies unseen candidates rated by those users
+- uses similarity-adjusted ratings as the scoring signal
+- falls back to highly rated unrated movies when collaborative evidence is weak or absent
+
+## GDS projection and algorithms
+
+The project uses the official Neo4j GDS plugin for in-memory graph analytics.
+
+### Neo4j Compose configuration
+
+The Neo4j container is configured with:
+
+- NEO4J_PLUGINS: ["graph-data-science"]
+- NEO4J_dbms_security_procedures_unrestricted: "gds.*"
+
+The projection name used by the app is:
+
+- screening-room-ratings
+
+### Graph projection
+
+The app creates an in-memory projection over User and Movie nodes using an undirected RATED relationship. This supports:
+
+- node similarity analysis
+- Louvain community detection
+- path exploration on the data model
+
+### GDS node similarity
+
+The similar-users endpoint uses GDS nodeSimilarity.stream and ranks users by the highest similarity score after deduplication.
+
+### GDS Louvain
+
+The communities endpoint calls GDS Louvain and returns community membership as a sorted list of user IDs grouped by community.
+
+## Pathfinding
+
+The graph analytics layer supports read-only shortest-path queries over RATED relationships. The maximum search depth is bounded at 6 hops, and the database is never mutated as part of pathfinding.
+
+Endpoints:
+
+- GET /analytics/path/users/{user_id_1}/{user_id_2}
+- GET /analytics/path/user-movie/{user_id}/{movie_id}
+
+A path result includes:
+
+- found flag
+- ordered list of nodes
+- ordered list of relationships
+- hop count
+- explanatory message when no path is found
+
+## Ollama AI assistant
+
+The assistant is implemented and configured to use the local Ollama model qwen2.5:1.5b.
+
+### Supported allowlisted query templates
+
+The assistant does not generate raw Cypher. It selects from five fixed templates:
+
+1. popular_movies
+2. top_genre_movies
+3. movie_details
+4. user_recommendations
+5. popular_tags
+
+Each template is validated before execution and must exactly match an approved query pattern.
+
+### Safety safeguards
+
+The assistant enforces these safety checks:
+
+- Questions must be non-empty strings
+- limit must be between 1 and 25
+- movie_id and user_id must be positive integers
+- genre values must come from the known MovieLens genre list
+- only read-only Neo4j access is used
+- comments and multiple Cypher statements are rejected
+- arbitrary or unapproved queries are rejected
+- unknown questions return a clear error instead of exposing database internals
+
+### Assistant request example
+
+```json
+{
+  "question": "Find five highly rated comedy movies"
+}
+```
+
+The execution path is:
+
+- FastAPI receives the request
+- assistant validates the question
+- Ollama classifies the intent and normalized parameters
+- app validates the selected template and parameters
+- Neo4j runs the read-only query
+- results are returned in a safe JSON payload
+
+## Frontend and demo usage
+
+The app serves a responsive movie-club landing page at the root path. The front end uses HTML, CSS, and vanilla JavaScript and communicates with the same FastAPI endpoints used by the API.
+
+Example browser calls:
+
+- http://localhost:8000/
 - http://localhost:8000/recommendations/popular?limit=5
 - http://localhost:8000/recommendations/hidden-gems?limit=5
-- http://localhost:8000/recommendations/similar/1?limit=5
 - http://localhost:8000/recommendations/personalized/1?limit=5
 - http://localhost:8000/analytics/similar-users/1?limit=5
 - http://localhost:8000/analytics/communities?limit=10
 
-## Natural-language movie assistant foundation
+## Demo and troubleshooting
 
-The project now includes a secure, read-only movie assistant foundation. It does not connect to Ollama yet, but it is structured to support a future natural-language-to-Cypher workflow without letting the model generate arbitrary database commands.
+### Demo notebook
 
-### Allowlisted architecture
+A lightweight notebook is available at [notebooks/demo.ipynb](notebooks/demo.ipynb). It demonstrates:
 
-The assistant uses a strict allowlist of predefined query templates instead of regex-based Cypher blacklists. The model is not allowed to emit raw Cypher. Instead, it selects one of the supported intents and provides normalized parameters such as `$genre`, `$movie_id`, `$user_id`, and `$limit`.
+- node and relationship count checks
+- popular and hidden-gem API calls
+- personalized recommendations
+- similar users and communities
+- shortest-path requests
+- assistant requests to POST /assistant/ask
 
-Supported intents:
+### Docker troubleshooting
 
-- `popular_movies`
-- `top_genre_movies`
-- `movie_details`
-- `user_recommendations`
-- `popular_tags`
+If the stack is not ready:
 
-Each intent maps to a fixed query template written by the application team. The templates are validated before execution and must match one of the approved queries exactly.
+1. Check that Docker Desktop is running.
+2. Confirm the containers are up:
+   docker ps
+3. View logs for the app container:
+   docker logs screening-room-app
+4. View Neo4j logs if the import or graph layer is failing:
+   docker logs screening-room-neo4j
+5. Confirm the app is healthy:
+   http://localhost:8000/health
+6. Confirm Swagger docs are reachable:
+   http://localhost:8000/docs
 
-### Ollama integration
+### PowerShell troubleshooting
 
-The assistant can call a local Ollama instance using the installed `httpx` library. The service reads two environment variables:
+If the local app fails to start:
 
-- `OLLAMA_BASE_URL` — defaults to `http://localhost:11434` when FastAPI runs locally on Windows or `http://ollama:11434` when FastAPI runs inside Docker Compose
-- `OLLAMA_MODEL` — defaults to `qwen2.5:1.5b`
+1. Activate the environment.
+2. Confirm .env variables are present.
+3. Verify the Neo4j password is set in the active shell.
+4. Starting the app locally:
+   uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+5. Confirm the app is serving the frontend at:
+   http://localhost:8000/
 
-The prompt sent to Ollama asks for JSON only and instructs the model to classify the question into one of the five allowlisted intents and return parameters such as `$genre`, `$movie_id`, `$user_id`, and `$limit`. The model never generates executable Cypher.
+## Verification baseline
 
-### Safe validation rules
+The project has verified baseline results for the Part 1 implementation:
 
-- `limit` must be an integer between 1 and 25
-- `movie_id` and `user_id` must be positive integers
-- `genre` must come from the actual MovieLens genres used in the graph
-- only read-only Neo4j access is used
-- multiple statements, comments, and non-allowlisted queries are rejected
-- unknown questions return a clear error rather than executing arbitrary Cypher
-- recognized genres without numeric user IDs are routed to `top_genre_movies`, not `user_recommendations`
+- 50 passing tests
+- 78% coverage
+- Pylint 9.69/10
 
-### Query execution model
+These numbers reflect the current working project state and should be used as the baseline for future enhancements.
 
-The service runs each query in a Neo4j read session with `READ_ACCESS` and uses a read transaction with a short timeout where supported by the driver. This keeps the database access restricted to safe, pre-approved read operations.
+## Design limitations and Part 2 boundary
 
-### Docker setup
+This Part 1 implementation is intentionally limited to historical MovieLens data and does not yet model social interactions, follower graphs, or live user activity. The recommendation system is graph-based and rating-driven. Social and behavioral features are prospective Part 2 work, not part of the current verified submission.
 
-When running the app in Docker Compose, the Ollama service is exposed on port `11434` and the app container uses the internal address `http://ollama:11434` by default. When FastAPI runs directly on a Windows host, use `http://localhost:11434`.
+## Additional documentation
 
-### Assistant API
-
-- `POST /assistant/ask` with JSON body:
-  `{"question": "Find five highly rated comedy movies"}`
-
-Example response:
-
-```json
-{
-  "question": "Find five highly rated comedy movies",
-  "generated_cypher": "MATCH (:User)-[r:RATED]->(m:Movie)-[:IN_GENRE]->(:Genre {name: $genre}) ... LIMIT $limit",
-  "results": [{"movie_id": 1, "title": "Toy Story"}],
-  "explanation": "This answer is produced from a fixed, allowlisted MovieLens query template and a read-only Neo4j session. The assistant does not modify the database."
-}
-```
-
-### Notes
-
-- The assistant is intentionally conservative and does not allow arbitrary LLM-generated Cypher.
-- The project still keeps the recommendation engine, GDS analytics endpoints, and graph data untouched.
-- No Ollama integration is connected yet; the current design is intentionally an allowlisted intent-and-parameters layer for a future LLM integration.
+- [documentation/architecture.md](documentation/architecture.md)
+- [notebooks/demo.ipynb](notebooks/demo.ipynb)
 
 ## Notes
 
-- Do not commit actual secrets or real database credentials.
-- `docker-compose.yml` is prepared for Neo4j and a future Ollama service.
-- The project now includes the recommendation engine, API endpoints, GDS analytics, and the secure movie assistant foundation built on the existing graph structure.
+- Do not commit real credentials or production secrets.
+- The environment template contains placeholders only.
+- The app remains read-only for the assistant and pathfinding workflows.
+- Implementation scope is deliberately limited to verified Part 1 features.
