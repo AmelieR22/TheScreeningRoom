@@ -167,6 +167,92 @@ class GraphAnalyticsService(Neo4jServiceBase):
             for row in rows
         ]
 
+    def resolve_platform_user_identifier(self, identifier: str) -> dict[str, Any]:
+        """Resolve a username or platform ID to a PlatformUser node."""
+        cleaned = (identifier or "").strip()
+        if not cleaned:
+            raise ValueError("User identifier cannot be blank.")
+
+        query = """
+        MATCH (p:PlatformUser)
+        WHERE p.platformUserId = $identifier OR p.username = $identifier
+        RETURN p.platformUserId AS platformUserId,
+               p.username AS username
+        LIMIT 1
+        """
+        rows = self._run_read_query(query, {"identifier": cleaned})
+        if not rows:
+            raise ValueError(f"No platform profile matched '{cleaned}'.")
+        row = rows[0]
+        return {
+            "platformUserId": row.get("platformUserId"),
+            "username": row.get("username"),
+        }
+
+    def get_similar_platform_users(self, identifier: str, limit: int = 5) -> list[dict[str, Any]]:
+        """Return platform users with the most overlapping liked films."""
+        normalized_limit = self._normalize_limit(limit, minimum=1)
+        source = self.resolve_platform_user_identifier(identifier)
+        profile_id = source.get("platformUserId")
+        username = source.get("username")
+
+        if not profile_id:
+            return []
+
+        query = """
+        MATCH (source:PlatformUser {platformUserId: $profile_id})-[:LIKED]->(movie:Movie)
+        WITH source, collect(DISTINCT movie.movieId) AS source_liked
+        MATCH (other:PlatformUser)-[:LIKED]->(shared:Movie)
+        WHERE other.platformUserId <> $profile_id AND shared.movieId IN source_liked
+        WITH other, collect(DISTINCT shared.movieId) AS shared_movies, size(source_liked) AS source_like_count
+        MATCH (other)-[:LIKED]->(other_movie:Movie)
+        WITH other, shared_movies, source_like_count, count(DISTINCT other_movie) AS other_like_count
+        WITH other,
+             size(shared_movies) AS shared_count,
+             source_like_count,
+             other_like_count,
+             CASE
+                 WHEN source_like_count + other_like_count = 0 THEN 0.0
+                 ELSE toFloat(size(shared_movies)) / toFloat(source_like_count + other_like_count - size(shared_movies))
+             END AS score
+        WHERE score > 0
+        RETURN other.platformUserId AS platformUserId,
+               other.username AS username,
+               round(score, 4) AS score
+        ORDER BY score DESC, other.username ASC
+        LIMIT $limit
+        """
+
+        rows = self._run_read_query(
+            query,
+            {"profile_id": profile_id, "limit": normalized_limit},
+        )
+
+        return [
+            {
+                "user_id": row.get("platformUserId"),
+                "username": row.get("username") or row.get("platformUserId"),
+                "score": round(float(row.get("score") or 0.0), 4),
+                "source": "platform-like-overlap",
+                "label": row.get("username") or f"Platform profile {row.get('platformUserId')}",
+            }
+            for row in rows
+        ]
+
+    def get_similar_users_by_identifier(self, identifier: str | int, limit: int = 5) -> list[dict[str, Any]]:
+        """Return similar users for numeric MovieLens IDs or platform user identifiers."""
+        if isinstance(identifier, int):
+            return self.get_similar_users(identifier, limit=limit)
+
+        cleaned = str(identifier).strip()
+        if not cleaned:
+            raise ValueError("User identifier cannot be blank.")
+
+        if cleaned.isdigit():
+            return self.get_similar_users(int(cleaned), limit=limit)
+
+        return self.get_similar_platform_users(cleaned, limit=limit)
+
     def find_user_path(self, user_id_1: int, user_id_2: int) -> dict[str, Any]:
         """Find a shortest path between two users via shared movie ratings."""
         normalized_user_id_1 = self._validate_user_id(user_id_1)
@@ -253,6 +339,97 @@ class GraphAnalyticsService(Neo4jServiceBase):
                 "found": False,
                 "path": {"nodes": [], "relationships": [], "hop_count": 0},
                 "message": "No path found between the user and the movie.",
+            }
+
+        row = rows[0]
+        return {
+            "found": True,
+            "path": {
+                "nodes": row.get("nodes") or [],
+                "relationships": row.get("relationships") or [],
+                "hop_count": int(row.get("hop_count") or 0),
+            },
+        }
+
+    def find_user_path_by_identifier(self, user_identifier_1: str | int, user_identifier_2: str | int) -> dict[str, Any]:
+        """Find a shortest path for either MovieLens or PlatformUser identifiers."""
+        if isinstance(user_identifier_1, int):
+            normalized_a = self._validate_user_id(user_identifier_1)
+            if isinstance(user_identifier_2, int):
+                return self.find_user_path(normalized_a, self._validate_user_id(user_identifier_2))
+            return self.find_platform_user_path_by_identifier(str(user_identifier_2), normalized_a)
+
+        if isinstance(user_identifier_2, int):
+            return self.find_platform_user_path_by_identifier(str(user_identifier_1), self._validate_user_id(user_identifier_2))
+
+        cleaned_a = str(user_identifier_1).strip()
+        cleaned_b = str(user_identifier_2).strip()
+        if not cleaned_a or not cleaned_b:
+            raise ValueError("User identifiers cannot be blank.")
+
+        if cleaned_a.isdigit() and cleaned_b.isdigit():
+            return self.find_user_path(int(cleaned_a), int(cleaned_b))
+
+        if cleaned_a.isdigit() and not cleaned_b.isdigit():
+            return self.find_platform_user_path_by_identifier(cleaned_b, int(cleaned_a))
+
+        if cleaned_b.isdigit() and not cleaned_a.isdigit():
+            return self.find_platform_user_path_by_identifier(cleaned_a, int(cleaned_b))
+
+        return self.find_platform_user_path_by_identifier(cleaned_a, cleaned_b)
+
+    def find_platform_user_path_by_identifier(self, first_identifier: str | int, second_identifier: str | int) -> dict[str, Any]:
+        """Find the shortest path between two platform users via shared likes and watched films."""
+        if isinstance(first_identifier, int):
+            first = self._validate_user_id(first_identifier)
+            second = self._validate_user_id(second_identifier)
+            if isinstance(second_identifier, int):
+                return self.find_user_path(first, second)
+            second_profile = self.resolve_platform_user_identifier(str(second_identifier))
+            return self.find_platform_user_path_by_identifier(first_profile_id := second_profile.get("platformUserId"), first)
+
+        if isinstance(second_identifier, int):
+            second_profile = self.resolve_platform_user_identifier(str(first_identifier))
+            return self.find_platform_user_path_by_identifier(second_profile.get("platformUserId"), second_identifier)
+
+        first_profile = self.resolve_platform_user_identifier(str(first_identifier))
+        second_profile = self.resolve_platform_user_identifier(str(second_identifier))
+        first_id = first_profile.get("platformUserId")
+        second_id = second_profile.get("platformUserId")
+
+        query = """
+        MATCH (start:PlatformUser {platformUserId: $first_id}), (end:PlatformUser {platformUserId: $second_id})
+        MATCH p = shortestPath((start)-[:LIKED|WATCHED|WANTS_TO_WATCH*..6]-(end))
+        WITH p,
+             nodes(p) AS path_nodes,
+             relationships(p) AS path_relationships
+        RETURN [node IN path_nodes | {
+            type: CASE WHEN 'Movie' IN labels(node) THEN 'Movie' ELSE 'PlatformUser' END,
+            id: CASE WHEN 'Movie' IN labels(node) THEN node.movieId ELSE node.platformUserId END,
+            title: CASE WHEN 'Movie' IN labels(node) THEN node.title ELSE node.username END,
+            username: CASE WHEN 'PlatformUser' IN labels(node) THEN node.username ELSE null END
+        }] AS nodes,
+        [rel IN path_relationships | {
+            type: type(rel),
+            from: CASE WHEN 'Movie' IN labels(startNode(rel)) THEN startNode(rel).movieId ELSE startNode(rel).platformUserId END,
+            to: CASE WHEN 'Movie' IN labels(endNode(rel)) THEN endNode(rel).movieId ELSE endNode(rel).platformUserId END
+        }] AS relationships,
+        length(p) AS hop_count
+        """
+
+        rows = self._run_read_query(
+            query,
+            {
+                "first_id": first_id,
+                "second_id": second_id,
+            },
+        )
+
+        if not rows:
+            return {
+                "found": False,
+                "path": {"nodes": [], "relationships": [], "hop_count": 0},
+                "message": "No connection was found between those platform profiles.",
             }
 
         row = rows[0]

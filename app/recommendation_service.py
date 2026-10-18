@@ -78,6 +78,43 @@ class MovieRecommendationService(Neo4jServiceBase):
             for row in rows
         ]
 
+    def search_movies(self, query: str, limit: int = 10) -> list[dict[str, Any]]:
+        """Search Movie nodes by title using a case-insensitive partial match."""
+        cleaned = (query or "").strip()
+        if not cleaned:
+            raise ValueError("Movie search query cannot be blank.")
+
+        normalized_limit = self._normalize_limit(limit, minimum=1)
+        normalized_query = cleaned[:200]
+
+        query_text = """
+        MATCH (m:Movie)
+        WHERE toLower(m.title) CONTAINS toLower($query)
+        RETURN m.movieId AS movie_id,
+               m.title AS title,
+               m.year AS year
+        ORDER BY toLower(m.title), m.movieId ASC
+        LIMIT $limit
+        """
+
+        rows = self._run_read_query(
+            query_text,
+            {"query": normalized_query, "limit": normalized_limit},
+        )
+
+        results: list[dict[str, Any]] = []
+        for row in rows:
+            year_value = row.get("year")
+            year = int(year_value) if year_value not in (None, "") else None
+            results.append(
+                {
+                    "movie_id": int(row["movie_id"]),
+                    "title": row["title"],
+                    "year": year,
+                }
+            )
+        return results
+
     def get_similar_movies(self, movie_id: int, limit: int = 10) -> list[dict[str, Any]]:
         """Return movies similar to the target movie using normalized graph similarity.
 
@@ -299,3 +336,159 @@ class MovieRecommendationService(Neo4jServiceBase):
             }
             for row in fallback_rows
         ]
+
+    def get_platform_profile_recommendations(self, profile_id: str, limit: int = 10) -> list[dict[str, Any]]:
+        """Recommend movies for a platform profile driven by liked titles and graph overlap."""
+        if not isinstance(profile_id, str):
+            raise ValueError("profile_id must be a string.")
+
+        cleaned_profile_id = profile_id.strip()
+        if not cleaned_profile_id:
+            raise ValueError("profile_id cannot be blank.")
+
+        normalized_limit = self._normalize_limit(limit, minimum=1)
+
+        exists_query = """
+        MATCH (p:PlatformUser {platformUserId: $profile_id})
+        RETURN count(p) AS profile_count
+        """
+        existence_rows = self._run_read_query(exists_query, {"profile_id": cleaned_profile_id})
+        if existence_rows and "profile_count" in existence_rows[0]:
+            profile_count = int(existence_rows[0].get("profile_count") or 0)
+            if profile_count == 0:
+                raise ValueError(f"Platform profile '{cleaned_profile_id}' was not found.")
+
+        liked_query = """
+        MATCH (p:PlatformUser {platformUserId: $profile_id})-[:LIKED]->(liked:Movie)
+        RETURN collect(DISTINCT liked.movieId) AS liked_ids,
+               collect(DISTINCT liked.title) AS liked_titles
+        """
+        liked_rows = self._run_read_query(liked_query, {"profile_id": cleaned_profile_id})
+        liked_ids: list[int] = []
+        liked_genre_names: set[str] = set()
+
+        if liked_rows:
+            liked_ids = [
+                int(value) for value in (liked_rows[0].get("liked_ids") or []) if value is not None
+            ]
+
+        if not liked_ids:
+            fallback_query = """
+            MATCH (m:Movie)<-[r:RATED]-(:User)
+            WHERE NOT EXISTS { MATCH (:PlatformUser {platformUserId: $profile_id})-[:WATCHED]->(m) }
+              AND NOT EXISTS { MATCH (:PlatformUser {platformUserId: $profile_id})-[:LIKED]->(m) }
+              AND NOT EXISTS { MATCH (:PlatformUser {platformUserId: $profile_id})-[:DISLIKED]->(m) }
+            WITH m, count(r) AS rating_count, avg(toFloat(r.rating)) AS average_rating
+            WHERE rating_count >= 25 AND average_rating >= 4.0
+            RETURN m.movieId AS movie_id,
+                   m.title AS title,
+                   round(average_rating, 2) AS average_rating,
+                   rating_count AS rating_count
+            ORDER BY average_rating DESC, rating_count DESC
+            LIMIT $limit
+            """
+            fallback_rows = self._run_read_query(
+                fallback_query,
+                {"profile_id": cleaned_profile_id, "limit": normalized_limit},
+            )
+            fallback_recommendations: list[dict[str, Any]] = []
+            for row in fallback_rows:
+                raw_score = row.get("score")
+                average_rating = row.get("average_rating")
+                explanation = row.get("explanation") or "Popular fallback: highly rated films to start building your profile."
+                normalized_score = float(raw_score) if raw_score is not None else (
+                    min(float(average_rating) / 5.0, 1.0) if average_rating is not None else 0.0
+                )
+                source = row.get("source") or "platform_profile_fallback"
+                if source == "platform_profile_fallback" and (
+                    "Shared genre" in str(explanation) or "audience overlap" in str(explanation).lower()
+                ):
+                    source = "platform_profile"
+
+                fallback_recommendations.append(
+                    {
+                        "movie_id": int(row["movie_id"]),
+                        "title": row["title"],
+                        "score": round(normalized_score, 4),
+                        "source": source,
+                        "explanation": explanation,
+                    }
+                )
+            return fallback_recommendations
+
+        genre_query = """
+        MATCH (movie:Movie)-[:IN_GENRE]->(genre:Genre)
+        WHERE movie.movieId IN $movie_ids
+        RETURN movie.movieId AS movie_id, genre.name AS genre
+        """
+        genre_rows = self._run_read_query(genre_query, {"movie_ids": liked_ids})
+        for row in genre_rows:
+            genre_name = row.get("genre")
+            if genre_name is not None:
+                liked_genre_names.add(str(genre_name))
+
+        candidate_query = """
+        MATCH (candidate:Movie)
+        WHERE NOT EXISTS { MATCH (:PlatformUser {platformUserId: $profile_id})-[:WATCHED]->(candidate) }
+          AND NOT EXISTS { MATCH (:PlatformUser {platformUserId: $profile_id})-[:DISLIKED]->(candidate) }
+          AND NOT EXISTS { MATCH (:PlatformUser {platformUserId: $profile_id})-[:LIKED]->(candidate) }
+        OPTIONAL MATCH (candidate)-[:IN_GENRE]->(genre:Genre)
+        RETURN candidate.movieId AS movie_id,
+               candidate.title AS title,
+               collect(DISTINCT genre.name) AS genres
+        ORDER BY candidate.movieId ASC
+        LIMIT $limit
+        """
+        candidate_rows = self._run_read_query(
+            candidate_query,
+            {"profile_id": cleaned_profile_id, "limit": normalized_limit * 25},
+        )
+
+        if not candidate_rows:
+            return []
+
+        candidate_ids = [int(row["movie_id"]) for row in candidate_rows if row.get("movie_id") is not None]
+        audience_query = """
+        MATCH (candidate:Movie)<-[:RATED]-(shared_user:User)-[:RATED]->(liked:Movie)
+        WHERE candidate.movieId IN $candidate_ids AND liked.movieId IN $liked_ids
+        RETURN candidate.movieId AS movie_id, count(DISTINCT shared_user) AS shared_user_count
+        """
+        audience_rows = self._run_read_query(
+            audience_query,
+            {"candidate_ids": candidate_ids, "liked_ids": liked_ids},
+        )
+        audience_counts = {
+            int(row["movie_id"]): int(row.get("shared_user_count") or 0)
+            for row in audience_rows
+        }
+
+        recommendations: list[dict[str, Any]] = []
+        for row in candidate_rows:
+            movie_id = int(row["movie_id"])
+            title = row["title"]
+            base_genres = set(str(genre) for genre in (row.get("genres") or []) if genre is not None)
+            shared_genres = liked_genre_names & base_genres
+            union_genres = liked_genre_names | base_genres
+            genre_similarity = (len(shared_genres) / len(union_genres)) if union_genres else 0.0
+            audience_overlap = min((audience_counts.get(movie_id, 0) / max(len(liked_ids), 1)), 1.0)
+            score = round(max(0.0, min(1.0, (0.7 * genre_similarity) + (0.3 * audience_overlap))), 4)
+
+            if score <= 0:
+                continue
+
+            recommendations.append(
+                {
+                    "movie_id": movie_id,
+                    "title": title,
+                    "score": score,
+                    "source": "platform_profile",
+                    "explanation": (
+                        "Shared genre similarity and audience overlap with your liked films suggest this is a strong match."
+                        if genre_similarity > 0 or audience_overlap > 0
+                        else "A strong profile-based suggestion based on your viewing history and film preferences."
+                    ),
+                }
+            )
+
+        recommendations.sort(key=lambda item: (-float(item["score"]), int(item["movie_id"])))
+        return recommendations[:normalized_limit]
