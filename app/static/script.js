@@ -321,6 +321,36 @@ function renderMyProfile(data) {
   });
 }
 
+async function loadProfileCommunities(profileId) {
+  const container = document.getElementById("profile-communities");
+  if (!container) return;
+
+  if (!profileId) {
+    renderProfileList("profile-communities", [], "Select a profile to view joined communities.", (item) => {
+      const node = document.createElement("span");
+      node.textContent = item.communityName || `Community ${item.communityId}`;
+      return node;
+    });
+    return;
+  }
+
+  try {
+    const payload = await fetchJson(`${API_BASE}/platform-users/${profileId}/communities`);
+    const items = Array.isArray(payload.items) ? payload.items : [];
+    renderProfileList("profile-communities", items, "No communities joined yet.", (item) => {
+      const node = document.createElement("span");
+      node.textContent = item.communityName || `Community ${item.communityId}`;
+      return node;
+    });
+  } catch (error) {
+    renderProfileList("profile-communities", [], `Could not load joined communities. ${error.message}`, (item) => {
+      const node = document.createElement("span");
+      node.textContent = item.communityName || `Community ${item.communityId}`;
+      return node;
+    });
+  }
+}
+
 function getMovieActionState(movieId, action) {
   const { watchlist = [], reactions = [] } = state.profileActivity || {};
 
@@ -393,6 +423,7 @@ async function loadProfileActivity() {
     const profile = await fetchJson(`${API_BASE}/platform-users/${profileId}/activity`);
     state.profileActivity = profile;
     renderMyProfile(profile);
+    await loadProfileCommunities(profileId);
     renderProfileStatus(`Loaded profile ${profile.username || profile.platformUserId}.`);
     document.querySelectorAll(".movie-card").forEach(syncMovieCardButtonState);
   } catch (error) {
@@ -504,8 +535,10 @@ function setSelectedProfile(profileId) {
 
   if (profileId) {
     loadProfileActivity();
+    loadProfileCommunities(profileId);
   } else {
     renderProfileStatus("Select or create a profile to save your watchlist, reactions, and ratings.");
+    loadProfileCommunities("");
   }
 }
 
@@ -832,6 +865,62 @@ async function loadSimilarUsers(userId) {
   }
 }
 
+function buildSampleCommunityDetail(community) {
+  const genres = Array.isArray(community.dominant_genres) && community.dominant_genres.length
+    ? community.dominant_genres
+    : ["illustrative"];
+  const sampleMovie = genres[0] ? `${genres[0]}-leaning film` : "illustrative film";
+
+  return `
+    <div class="community-detail-header">
+      <button type="button" class="community-back" data-community-back>Back to Communities</button>
+    </div>
+    <div class="community-detail-card">
+      <p class="eyebrow">Inferred community</p>
+      <h4>${community.title || `Community ${community.community_id}`}</h4>
+      <p>${community.description || "Inferred from shared film ratings in the graph."}</p>
+      <div class="community-meta-row">
+        <span>${community.user_count ?? (community.user_ids || []).length} inferred members</span>
+        <span>${(community.dominant_genres || []).length ? community.dominant_genres.join(", ") : "Sparse evidence"}</span>
+      </div>
+      <div class="community-demo-section">
+        <h5>Upcoming Community Watch <span class="demo-preview">Preview only</span></h5>
+        <div class="demo-watch-card">
+          <div class="demo-poster" aria-label="Sample film poster">🎬</div>
+          <div>
+            <strong>${sampleMovie}</strong>
+            <p>Example screening: Tue, Apr 22 · 8:30 PM</p>
+            <small>Illustrative preview for a future watch event; no scheduling or RSVP is active.</small>
+          </div>
+        </div>
+      </div>
+      <div class="community-demo-section">
+        <h5>Community Chat</h5>
+        <ul class="demo-chat-list">
+          <li><strong>Demo host:</strong> “We should queue a rainy-night rewatch next.”</li>
+          <li><strong>Member:</strong> “I’m in for a quiet, conversation-led screening.”</li>
+          <li><strong>Member:</strong> “The ${genres[0] || "genre"} picks are getting stronger this week.”</li>
+        </ul>
+        <div class="demo-chat-disabled">Message input disabled in this demo.</div>
+      </div>
+    </div>
+  `;
+}
+
+function openCommunityDetail(community, detail) {
+  if (!detail) return;
+
+  detail.innerHTML = buildSampleCommunityDetail(community);
+  detail.classList.remove("hidden");
+  const backButton = detail.querySelector("[data-community-back]");
+  if (backButton) {
+    backButton.addEventListener("click", () => {
+      detail.classList.add("hidden");
+      detail.innerHTML = "";
+    });
+  }
+}
+
 async function loadCommunities() {
   setLoading("communities-results", "Mapping viewer communities...");
 
@@ -845,18 +934,148 @@ async function loadCommunities() {
     }
 
     const container = document.getElementById("communities-results");
+    const detail = document.getElementById("community-detail");
     container.replaceChildren();
+    if (detail) {
+      detail.classList.add("hidden");
+      detail.innerHTML = "";
+    }
 
     for (const community of items) {
       const row = document.createElement("div");
-      row.className = "analytics-item";
-      const label = document.createElement("strong");
-      label.textContent = `Community ${community.community_id}`;
-      const summary = document.createElement("span");
-      summary.textContent = ` · ${community.user_count} users · ${community.user_ids.join(", ")}`;
+      row.className = "analytics-item community-item";
+
+      const label = document.createElement("button");
+      label.type = "button";
+      label.className = "community-title-button";
+      label.textContent = community.title || `Community ${community.community_id}`;
+      label.setAttribute("aria-label", `Open details for ${community.title || `Community ${community.community_id}`}`);
+      label.addEventListener("click", () => openCommunityDetail(community, detail));
+
+      const summary = document.createElement("div");
+      summary.className = "community-summary";
+      const genreText = Array.isArray(community.dominant_genres) && community.dominant_genres.length
+        ? ` · ${community.dominant_genres.join(", ")}`
+        : " · sparse interest mix";
+      summary.textContent = `${community.user_count ?? (community.user_ids || []).length} inferred users${genreText}`;
+
+      const description = document.createElement("div");
+      description.className = "community-description";
+      description.textContent = community.description || "Inferred from shared film ratings in the graph.";
+
+      const members = Array.isArray(community.user_ids) ? community.user_ids : [];
+      const memberList = document.createElement("div");
+      memberList.className = "community-members";
+      memberList.hidden = true;
+      const memberHeader = document.createElement("div");
+      memberHeader.className = "community-member-header";
+      memberHeader.textContent = "Inferred members";
+      memberList.appendChild(memberHeader);
+
+      const memberChips = document.createElement("div");
+      memberChips.className = "community-member-chips";
+      for (const userId of members) {
+        const chip = document.createElement("span");
+        chip.className = "member-chip";
+        chip.textContent = `User ${userId}`;
+        memberChips.appendChild(chip);
+      }
+      memberList.appendChild(memberChips);
+
+      const toggle = document.createElement("button");
+      toggle.type = "button";
+      toggle.className = "community-toggle";
+      toggle.textContent = members.length > 0 ? "Show members" : "No members";
+      toggle.disabled = members.length === 0;
+      toggle.setAttribute("aria-expanded", "false");
+      toggle.addEventListener("click", () => {
+        const expanded = memberList.hidden;
+        memberList.hidden = !expanded;
+        toggle.textContent = expanded ? "Hide members" : "Show members";
+        toggle.setAttribute("aria-expanded", String(expanded));
+      });
+
+      const actionRow = document.createElement("div");
+      actionRow.className = "community-action-row";
+
+      const membershipButton = document.createElement("button");
+      membershipButton.type = "button";
+      membershipButton.className = "community-action";
+      membershipButton.dataset.joined = "false";
+      membershipButton.textContent = "Join Community";
+      membershipButton.title = state.selectedProfileId ? "Join this community" : "Select a platform profile first";
+
+      const refreshMembershipButton = async () => {
+        if (!state.selectedProfileId) {
+          membershipButton.disabled = true;
+          membershipButton.dataset.joined = "false";
+          membershipButton.textContent = "Join Community";
+          membershipButton.title = "Select a platform profile first";
+          return;
+        }
+
+        try {
+          const payload = await fetchJson(`${API_BASE}/platform-users/${state.selectedProfileId}/communities/${community.community_id}/membership`);
+          const joined = Boolean(payload && payload.joined);
+          membershipButton.disabled = false;
+          membershipButton.dataset.joined = String(joined);
+          membershipButton.textContent = joined ? "Leave Community" : "Join Community";
+          membershipButton.classList.toggle("secondary", joined);
+          membershipButton.title = joined ? "Leave this community" : "Join this community";
+        } catch (error) {
+          membershipButton.disabled = false;
+          membershipButton.dataset.joined = "false";
+          membershipButton.textContent = "Join Community";
+          membershipButton.classList.remove("secondary");
+          membershipButton.title = "Membership status unavailable";
+        }
+      };
+
+      membershipButton.addEventListener("click", async () => {
+        if (!state.selectedProfileId) {
+          renderProfileStatus("Select a platform profile before joining a community.", true);
+          return;
+        }
+
+        const alreadyJoined = membershipButton.dataset.joined === "true";
+        const endpoint = alreadyJoined ? "leave" : "join";
+        const method = alreadyJoined ? "DELETE" : "POST";
+
+        try {
+          const payload = await fetchJson(`${API_BASE}/platform-users/${state.selectedProfileId}/communities/${community.community_id}/${endpoint}`, {
+            method,
+          });
+          const joined = Boolean(payload && payload.joined);
+          membershipButton.dataset.joined = String(joined);
+          membershipButton.textContent = joined ? "Leave Community" : "Join Community";
+          membershipButton.classList.toggle("secondary", joined);
+          membershipButton.title = joined ? "Leave this community" : "Join this community";
+          renderProfileStatus(joined ? `You joined ${community.title || `Community ${community.community_id}`}.` : `You left ${community.title || `Community ${community.community_id}`}.`);
+          await loadProfileCommunities(state.selectedProfileId);
+        } catch (error) {
+          renderProfileStatus(`Could not ${alreadyJoined ? "leave" : "join"} this community. ${error.message}`, true);
+        }
+      });
+
+      const openButton = document.createElement("button");
+      openButton.type = "button";
+      openButton.className = "community-action secondary";
+      openButton.textContent = "Open Community";
+      openButton.addEventListener("click", () => openCommunityDetail(community, detail));
+
+      actionRow.appendChild(openButton);
+      actionRow.appendChild(membershipButton);
+
+      label.setAttribute("type", "button");
       row.appendChild(label);
       row.appendChild(summary);
+      row.appendChild(description);
+      row.appendChild(memberList);
+      row.appendChild(actionRow);
+      row.appendChild(toggle);
       container.appendChild(row);
+
+      refreshMembershipButton();
     }
   } catch (error) {
     setErrorState("communities-results", `Community data could not be loaded. ${error.message}`);

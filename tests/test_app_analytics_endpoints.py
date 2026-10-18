@@ -56,7 +56,14 @@ def test_user_communities_endpoint_uses_service(mock_lifespan_services):
     _, _, _ = mock_lifespan_services
     service = MagicMock()
     service.get_user_communities.return_value = [
-        {"community_id": 1, "user_count": 3, "user_ids": [10, 11, 12]},
+        {
+            "community_id": 1,
+            "user_count": 3,
+            "user_ids": [10, 11, 12],
+            "dominant_genres": ["Drama", "Comedy"],
+            "title": "Drama-heavy cluster",
+            "description": "This group leans heavily toward Drama and Comedy.",
+        },
     ]
     app.dependency_overrides[get_graph_analytics_service] = lambda: service
 
@@ -69,6 +76,8 @@ def test_user_communities_endpoint_uses_service(mock_lifespan_services):
     assert response.status_code == 200
     assert response.json()["items"][0]["community_id"] == 1
     assert response.json()["items"][0]["user_count"] == 3
+    assert response.json()["items"][0]["dominant_genres"] == ["Drama", "Comedy"]
+    assert response.json()["items"][0]["title"] == "Drama-heavy cluster"
 
 
 def test_similar_users_endpoint_validates_positive_id(mock_lifespan_services):

@@ -16,6 +16,7 @@ class PlatformProfileService(Neo4jServiceBase):
     LIKED_RELATIONSHIP = "LIKED"
     DISLIKED_RELATIONSHIP = "DISLIKED"
     PLATFORM_RATED_RELATIONSHIP = "PLATFORM_RATED"
+    JOINED_RELATIONSHIP = "JOINED"
 
     def __init__(self, driver: Any | None = None, database: str | None = None) -> None:
         super().__init__(driver, database, service_name="platform profile")
@@ -77,12 +78,255 @@ class PlatformProfileService(Neo4jServiceBase):
             "CREATE CONSTRAINT platform_user_id IF NOT EXISTS FOR (p:PlatformUser) REQUIRE p.platformUserId IS UNIQUE",
             "CREATE CONSTRAINT platform_user_username IF NOT EXISTS FOR (p:PlatformUser) REQUIRE p.username IS UNIQUE",
             "CREATE CONSTRAINT movie_movieId IF NOT EXISTS FOR (m:Movie) REQUIRE m.movieId IS UNIQUE",
+            "CREATE CONSTRAINT film_community_id IF NOT EXISTS FOR (c:FilmCommunity) REQUIRE c.communityId IS UNIQUE",
         ]
         for query in queries:
             try:
                 self._run_write_query(query)
             except RuntimeError:
                 continue
+
+    def _validate_community_id(self, community_id: int) -> int:
+        try:
+            normalized = int(community_id)
+        except (TypeError, ValueError) as exc:  # pragma: no cover - validation path
+            raise ValueError("community_id must be an integer.") from exc
+
+        if normalized <= 0:
+            raise ValueError("community_id must be greater than zero.")
+        return normalized
+
+    def ensure_film_community(
+        self,
+        community_id: int,
+        *,
+        inferred_name: str | None = None,
+        description: str | None = None,
+        dominant_genres: list[str] | None = None,
+        inferred_member_count: int | None = None,
+    ) -> dict[str, Any]:
+        normalized_community_id = self._validate_community_id(community_id)
+        normalized_name = (inferred_name or f"Community {normalized_community_id}").strip() or f"Community {normalized_community_id}"
+        normalized_description = (description or "Inferred audience cluster.").strip() or "Inferred audience cluster."
+        normalized_genres = []
+        if dominant_genres is not None:
+            normalized_genres = [str(genre).strip() for genre in dominant_genres if str(genre or "").strip()]
+            normalized_genres = list(dict.fromkeys(normalized_genres))
+        normalized_count = int(inferred_member_count) if inferred_member_count is not None else 0
+
+        query = """
+        MERGE (c:FilmCommunity {communityId: $community_id})
+        ON CREATE SET c.communityKey = $community_key,
+                      c.createdAt = datetime()
+        SET c.communityKey = $community_key,
+            c.communityName = $inferred_name,
+            c.description = $description,
+            c.dominantGenres = $dominant_genres,
+            c.inferredMemberCount = $inferred_member_count
+        RETURN c.communityId AS communityId,
+               c.communityName AS communityName,
+               c.description AS description,
+               c.dominantGenres AS dominantGenres,
+               c.inferredMemberCount AS inferredMemberCount
+        """
+        rows = self._run_write_query(
+            query,
+            {
+                "community_id": normalized_community_id,
+                "community_key": f"community-{normalized_community_id}",
+                "inferred_name": normalized_name,
+                "description": normalized_description,
+                "dominant_genres": normalized_genres,
+                "inferred_member_count": normalized_count,
+            },
+        )
+        if not rows:
+            raise RuntimeError("Failed to ensure FilmCommunity node exists.")
+        row = rows[0]
+        return {
+            "communityId": int(row.get("communityId") or normalized_community_id),
+            "communityName": row.get("communityName") or normalized_name,
+            "description": row.get("description") or normalized_description,
+            "dominantGenres": row.get("dominantGenres") or normalized_genres,
+            "inferredMemberCount": int(row.get("inferredMemberCount") or normalized_count),
+        }
+
+    def join_community(self, profile_id: str, community_id: int) -> dict[str, Any]:
+        cleaned_id = self._validate_profile_id(profile_id)
+        normalized_community_id = self._validate_community_id(community_id)
+        if not self._profile_exists(cleaned_id):
+            raise ValueError(f"Platform profile '{cleaned_id}' was not found.")
+
+        self.ensure_film_community(
+            normalized_community_id,
+            inferred_name=f"Community {normalized_community_id}",
+            description="Inferred audience cluster.",
+            dominant_genres=[],
+            inferred_member_count=0,
+        )
+
+        query = """
+        MATCH (p:PlatformUser {platformUserId: $profile_id}), (c:FilmCommunity {communityId: $community_id})
+        MERGE (p)-[r:JOINED]->(c)
+        WITH p, c
+        OPTIONAL MATCH (c)<-[all:JOINED]-(:PlatformUser)
+        RETURN c.communityId AS communityId,
+               c.communityName AS communityName,
+               c.description AS description,
+               c.dominantGenres AS dominantGenres,
+               coalesce(c.inferredMemberCount, 0) AS inferredMemberCount,
+               count(all) AS join_count,
+               true AS joined,
+               p.platformUserId AS profile_id
+        """
+        rows = self._run_write_query(
+            query,
+            {"profile_id": cleaned_id, "community_id": normalized_community_id},
+        )
+        if not rows:
+            raise RuntimeError(f"Failed to join community {normalized_community_id}.")
+
+        row = rows[0]
+        return {
+            "communityId": int(row.get("communityId") or normalized_community_id),
+            "profile_id": row.get("profile_id") or cleaned_id,
+            "joined": bool(row.get("joined")),
+            "join_count": int(row.get("join_count") or 0),
+            "inferred_member_count": int(row.get("inferredMemberCount") or 0),
+            "communityName": row.get("communityName") or f"Community {normalized_community_id}",
+            "description": row.get("description") or "Inferred audience cluster.",
+            "dominantGenres": row.get("dominantGenres") or [],
+        }
+
+    def leave_community(self, profile_id: str, community_id: int) -> dict[str, Any]:
+        cleaned_id = self._validate_profile_id(profile_id)
+        normalized_community_id = self._validate_community_id(community_id)
+        if not self._profile_exists(cleaned_id):
+            raise ValueError(f"Platform profile '{cleaned_id}' was not found.")
+
+        self.ensure_film_community(
+            normalized_community_id,
+            inferred_name=f"Community {normalized_community_id}",
+            description="Inferred audience cluster.",
+            dominant_genres=[],
+            inferred_member_count=0,
+        )
+
+        query = """
+        MATCH (p:PlatformUser {platformUserId: $profile_id})-[r:JOINED]->(c:FilmCommunity {communityId: $community_id})
+        DELETE r
+        WITH c
+        OPTIONAL MATCH (c)<-[remaining:JOINED]-(:PlatformUser)
+        RETURN c.communityId AS communityId,
+               c.communityName AS communityName,
+               c.description AS description,
+               c.dominantGenres AS dominantGenres,
+               coalesce(c.inferredMemberCount, 0) AS inferredMemberCount,
+               count(remaining) AS join_count,
+               false AS joined,
+               $profile_id AS profile_id
+        """
+        rows = self._run_write_query(
+            query,
+            {"profile_id": cleaned_id, "community_id": normalized_community_id},
+        )
+        if not rows:
+            rows = [{
+                "communityId": normalized_community_id,
+                "communityName": f"Community {normalized_community_id}",
+                "description": "Inferred audience cluster.",
+                "dominantGenres": [],
+                "inferredMemberCount": 0,
+                "join_count": 0,
+                "joined": False,
+                "profile_id": cleaned_id,
+            }]
+
+        row = rows[0]
+        return {
+            "communityId": int(row.get("communityId") or normalized_community_id),
+            "profile_id": row.get("profile_id") or cleaned_id,
+            "joined": bool(row.get("joined")),
+            "join_count": int(row.get("join_count") or 0),
+            "inferred_member_count": int(row.get("inferredMemberCount") or 0),
+            "communityName": row.get("communityName") or f"Community {normalized_community_id}",
+            "description": row.get("description") or "Inferred audience cluster.",
+            "dominantGenres": row.get("dominantGenres") or [],
+        }
+
+    def get_community_membership(self, profile_id: str, community_id: int) -> dict[str, Any]:
+        cleaned_id = self._validate_profile_id(profile_id)
+        normalized_community_id = self._validate_community_id(community_id)
+        if not self._profile_exists(cleaned_id):
+            raise ValueError(f"Platform profile '{cleaned_id}' was not found.")
+
+        query = """
+        MATCH (p:PlatformUser {platformUserId: $profile_id})
+        OPTIONAL MATCH (p)-[joined:JOINED]->(c:FilmCommunity {communityId: $community_id})
+        OPTIONAL MATCH (c)<-[all:JOINED]-(:PlatformUser)
+        RETURN c.communityId AS communityId,
+               c.communityName AS communityName,
+               c.description AS description,
+               c.dominantGenres AS dominantGenres,
+               coalesce(c.inferredMemberCount, 0) AS inferredMemberCount,
+               count(all) AS join_count,
+               CASE WHEN joined IS NOT NULL THEN true ELSE false END AS joined,
+               p.platformUserId AS profile_id
+        """
+        rows = self._run_read_query(
+            query,
+            {"profile_id": cleaned_id, "community_id": normalized_community_id},
+        )
+        if not rows:
+            return {
+                "communityId": normalized_community_id,
+                "profile_id": cleaned_id,
+                "joined": False,
+                "join_count": 0,
+                "inferred_member_count": 0,
+                "communityName": f"Community {normalized_community_id}",
+                "description": "Inferred audience cluster.",
+                "dominantGenres": [],
+            }
+
+        row = rows[0]
+        return {
+            "communityId": int(row.get("communityId") or normalized_community_id),
+            "profile_id": row.get("profile_id") or cleaned_id,
+            "joined": bool(row.get("joined")),
+            "join_count": int(row.get("join_count") or 0),
+            "inferred_member_count": int(row.get("inferredMemberCount") or 0),
+            "communityName": row.get("communityName") or f"Community {normalized_community_id}",
+            "description": row.get("description") or "Inferred audience cluster.",
+            "dominantGenres": row.get("dominantGenres") or [],
+        }
+
+    def get_joined_communities(self, profile_id: str) -> list[dict[str, Any]]:
+        cleaned_id = self._validate_profile_id(profile_id)
+        if not self._profile_exists(cleaned_id):
+            raise ValueError(f"Platform profile '{cleaned_id}' was not found.")
+
+        query = """
+        MATCH (p:PlatformUser {platformUserId: $profile_id})-[:JOINED]->(c:FilmCommunity)
+        RETURN c.communityId AS communityId,
+               c.communityName AS communityName,
+               c.description AS description,
+               c.dominantGenres AS dominantGenres,
+               coalesce(c.inferredMemberCount, 0) AS inferredMemberCount
+        ORDER BY c.communityName ASC, c.communityId ASC
+        """
+        rows = self._run_read_query(query, {"profile_id": cleaned_id})
+        return [
+            {
+                "communityId": int(row.get("communityId") or 0),
+                "communityName": row.get("communityName") or "Community",
+                "description": row.get("description") or "Inferred audience cluster.",
+                "dominantGenres": row.get("dominantGenres") or [],
+                "inferredMemberCount": int(row.get("inferredMemberCount") or 0),
+                "joined": True,
+            }
+            for row in rows
+        ]
 
     def create_platform_profile(self, username: str) -> dict[str, Any]:
         cleaned_username = self._validate_username(username)

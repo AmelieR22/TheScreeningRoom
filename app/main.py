@@ -354,10 +354,19 @@ def get_similar_users(
 def get_user_communities(
     limit: int = Query(default=10, ge=1, le=50),
     service: GraphAnalyticsService = Depends(get_graph_analytics_service),
+    platform_service: PlatformProfileService = Depends(get_platform_profile_service),
 ):
-    """Return the top user communities discovered by GDS Louvain."""
+    """Return the top user communities discovered by GDS Louvain and materialize FilmCommunity nodes for them."""
     try:
         items = service.get_user_communities(limit=limit)
+        for item in items:
+            platform_service.ensure_film_community(
+                int(item.get("community_id")),
+                inferred_name=item.get("title") or f"Community {item.get('community_id')}",
+                description=item.get("description") or "Inferred audience cluster.",
+                dominant_genres=item.get("dominant_genres") or [],
+                inferred_member_count=int(item.get("user_count") or 0),
+            )
         return {"limit": limit, "items": items}
     except ValueError as exc:
         raise HTTPException(
@@ -578,6 +587,20 @@ def get_platform_user_activity(
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
 
 
+@app.get("/platform-users/{profile_id}/communities")
+def list_joined_communities(
+    profile_id: str,
+    service: PlatformProfileService = Depends(get_platform_profile_service),
+):
+    """Return the FilmCommunity nodes joined by the selected PlatformUser."""
+    try:
+        return {"items": service.get_joined_communities(profile_id)}
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
+
+
 @app.post("/platform-users/{profile_id}/watchlist")
 def add_to_watchlist(
     profile_id: str,
@@ -692,6 +715,51 @@ def remove_profile_rating(
     """Remove the platform-specific rating for a movie."""
     try:
         return service.remove_rating(profile_id, movie_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
+
+
+@app.post("/platform-users/{profile_id}/communities/{community_id}/join")
+def join_community(
+    profile_id: str,
+    community_id: int = Path(..., gt=0),
+    service: PlatformProfileService = Depends(get_platform_profile_service),
+):
+    """Join a detected community for a profile without mutating the inferred Louvain membership."""
+    try:
+        return service.join_community(profile_id, community_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
+
+
+@app.delete("/platform-users/{profile_id}/communities/{community_id}/leave")
+def leave_community(
+    profile_id: str,
+    community_id: int = Path(..., gt=0),
+    service: PlatformProfileService = Depends(get_platform_profile_service),
+):
+    """Leave a joined community while preserving the underlying community detection state."""
+    try:
+        return service.leave_community(profile_id, community_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
+
+
+@app.get("/platform-users/{profile_id}/communities/{community_id}/membership")
+def get_community_membership(
+    profile_id: str,
+    community_id: int = Path(..., gt=0),
+    service: PlatformProfileService = Depends(get_platform_profile_service),
+):
+    """Return the profile-specific membership state for one detected FilmCommunity."""
+    try:
+        return service.get_community_membership(profile_id, community_id)
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
     except RuntimeError as exc:

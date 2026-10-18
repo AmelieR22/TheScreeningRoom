@@ -237,6 +237,99 @@ def test_platform_lookup_route_and_numeric_recommendation_route_stay_distinct():
     recommendation_service.get_platform_profile_recommendations.assert_not_called()
 
 
+def test_film_community_join_leave_behaves_idempotently(service_with_mock_driver):
+    service, session = service_with_mock_driver
+    session.run.return_value.data.side_effect = [
+        [{"profile_count": 1}],
+        [{"community_count": 0}],
+        [{"communityId": 7, "communityKey": "community-7", "joined": True, "join_count": 1, "inferred_member_count": 12}],
+        [{"profile_count": 1}],
+        [{"communityId": 7, "communityName": "Community 7", "description": "Inferred audience cluster.", "dominantGenres": [], "inferredMemberCount": 12, "join_count": 1, "joined": True, "profile_id": "pf_123"}],
+        [{"profile_count": 1}],
+        [{"community_count": 0}],
+        [{"communityId": 7, "communityName": "Community 7", "description": "Inferred audience cluster.", "dominantGenres": [], "inferredMemberCount": 12, "join_count": 0, "joined": False, "profile_id": "pf_123"}],
+    ]
+
+    joined = service.join_community(profile_id="pf_123", community_id=7)
+    assert joined["communityId"] == 7
+    assert joined["joined"] is True
+    assert joined["join_count"] == 1
+
+    membership = service.get_community_membership(profile_id="pf_123", community_id=7)
+    assert membership["joined"] is True
+
+    left = service.leave_community(profile_id="pf_123", community_id=7)
+    assert left["joined"] is False
+    assert left["join_count"] == 0
+
+
+def test_platform_community_endpoints_expose_join_counts_and_louvain_membership():
+    service = MagicMock()
+    service.join_community.return_value = {
+        "communityId": 7,
+        "joined": True,
+        "join_count": 1,
+        "inferred_member_count": 12,
+        "profile_id": "pf_123",
+    }
+    service.leave_community.return_value = {
+        "communityId": 7,
+        "joined": False,
+        "join_count": 0,
+        "inferred_member_count": 12,
+        "profile_id": "pf_123",
+    }
+    service.get_community_membership.return_value = {
+        "communityId": 7,
+        "profile_id": "pf_123",
+        "joined": True,
+    }
+
+    app.dependency_overrides[get_platform_profile_service] = lambda: service
+    try:
+        with TestClient(app) as client:
+            join_response = client.post("/platform-users/pf_123/communities/7/join")
+            membership_response = client.get("/platform-users/pf_123/communities/7/membership")
+            leave_response = client.delete("/platform-users/pf_123/communities/7/leave")
+    finally:
+        app.dependency_overrides.clear()
+
+    assert join_response.status_code == 200
+    assert join_response.json()["joined"] is True
+    assert join_response.json()["join_count"] == 1
+    assert join_response.json()["inferred_member_count"] == 12
+    assert membership_response.status_code == 200
+    assert membership_response.json()["joined"] is True
+    assert leave_response.status_code == 200
+    assert leave_response.json()["joined"] is False
+    assert leave_response.json()["join_count"] == 0
+
+
+def test_platform_profile_endpoint_lists_joined_communities_for_my_profile():
+    service = MagicMock()
+    service.get_joined_communities.return_value = [
+        {
+            "communityId": 7,
+            "communityName": "Action Fans",
+            "description": "High-energy action movie enthusiasts.",
+            "dominantGenres": ["Action"],
+            "inferredMemberCount": 12,
+            "joined": True,
+        }
+    ]
+
+    app.dependency_overrides[get_platform_profile_service] = lambda: service
+    try:
+        with TestClient(app) as client:
+            response = client.get("/platform-users/pf_123/communities")
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    assert response.json()["items"][0]["communityName"] == "Action Fans"
+    assert response.json()["items"][0]["joined"] is True
+
+
 def test_platform_profile_service_preserves_movielens_data_modeling(service_with_mock_driver):
     service, _ = service_with_mock_driver
 
@@ -246,3 +339,4 @@ def test_platform_profile_service_preserves_movielens_data_modeling(service_with
     assert service.LIKED_RELATIONSHIP == "LIKED"
     assert service.DISLIKED_RELATIONSHIP == "DISLIKED"
     assert service.WANTS_TO_WATCH_RELATIONSHIP != "RATED"
+    assert service.JOINED_RELATIONSHIP == "JOINED"

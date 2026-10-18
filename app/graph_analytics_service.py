@@ -123,6 +123,61 @@ class GraphAnalyticsService(Neo4jServiceBase):
             for user_id, score in limited_users
         ]
 
+    def _build_community_summary(self, community_id: int, user_ids: list[int], dominant_genres: list[str]) -> dict[str, str | list[str]]:
+        """Create a brief, evidence-driven summary for a community."""
+        cleaned_genres = [str(genre).strip() for genre in dominant_genres if str(genre or "").strip()]
+        normalized_genres = list(dict.fromkeys(cleaned_genres))[:3]
+
+        if normalized_genres:
+            if len(normalized_genres) == 1:
+                title = f"{normalized_genres[0]}-leaning cluster"
+                description = (
+                    f"This group skews toward {normalized_genres[0]} based on the films its members rated. "
+                    f"{len(user_ids)} members are represented in this inferred interest cluster."
+                )
+            else:
+                title = f"{normalized_genres[0]} + {normalized_genres[1]} cluster"
+                description = (
+                    f"This community shows a clear mix of {normalized_genres[0]} and {normalized_genres[1]} "
+                    f"among its {len(user_ids)} members, based on shared movie ratings."
+                )
+            return {
+                "title": title,
+                "description": description,
+                "dominant_genres": normalized_genres,
+            }
+
+        title = f"Sparse viewer cluster #{community_id}"
+        description = (
+            "This community has no genre evidence yet; it may be small or lightly connected. "
+            "The members are preserved as numeric MovieLens users only."
+        )
+        return {
+            "title": title,
+            "description": description,
+            "dominant_genres": [],
+        }
+
+    def _get_community_genres(self, user_ids: list[int]) -> list[str]:
+        """Collect the dominant genres among a community's members from their ratings."""
+        if not user_ids:
+            return []
+
+        query = """
+        MATCH (user:User)
+        WHERE user.userId IN $user_ids
+        MATCH (user)-[:RATED]->(movie:Movie)-[:IN_GENRE]->(genre:Genre)
+        WITH genre.name AS genre, count(DISTINCT movie.movieId) AS genre_count
+        RETURN genre AS genre,
+               genre_count AS genre_count
+        ORDER BY genre_count DESC, genre ASC
+        LIMIT 3
+        """
+
+        rows = self._run_read_query(query, {"user_ids": user_ids})
+        genres = [row.get("genre") for row in rows if row.get("genre")]
+        return [str(genre) for genre in genres]
+
     def get_user_communities(self, limit: int = 10) -> list[dict[str, Any]]:
         """Return user communities using GDS Louvain.
 
@@ -158,14 +213,23 @@ class GraphAnalyticsService(Neo4jServiceBase):
             },
         )
 
-        return [
-            {
-                "community_id": int(row["community_id"]),
-                "user_count": int(row["user_count"]),
-                "user_ids": [int(user_id) for user_id in (row.get("user_ids") or [])],
-            }
-            for row in rows
-        ]
+        results: list[dict[str, Any]] = []
+        for row in rows:
+            user_ids = [int(user_id) for user_id in (row.get("user_ids") or [])]
+            dominant_genres = self._get_community_genres(user_ids)
+            summary = self._build_community_summary(int(row["community_id"]), user_ids, dominant_genres)
+            results.append(
+                {
+                    "community_id": int(row["community_id"]),
+                    "user_count": int(row["user_count"]),
+                    "user_ids": user_ids,
+                    "dominant_genres": summary["dominant_genres"],
+                    "title": summary["title"],
+                    "description": summary["description"],
+                }
+            )
+
+        return results
 
     def resolve_platform_user_identifier(self, identifier: str) -> dict[str, Any]:
         """Resolve a username or platform ID to a PlatformUser node."""
