@@ -286,13 +286,11 @@ button:focus-visible {
 
 .movie-card {
   position: relative;
-  min-height: 260px;
   display: flex;
   flex-direction: column;
-  justify-content: flex-end;
-  padding: 18px 16px;
+  padding: 16px;
   border-radius: 18px;
-  overflow: hidden;
+  overflow: visible;
   background: linear-gradient(180deg, rgba(255,255,255,0.06), rgba(10,8,9,0.78));
   border: 1px solid rgba(216, 181, 120, 0.18);
   box-shadow: inset 0 -50px 60px rgba(0, 0, 0, 0.5);
@@ -315,9 +313,11 @@ button:focus-visible {
 }
 
 .card-badge {
+  position: relative;
+  z-index: 1;
   display: inline-block;
   width: fit-content;
-  margin-bottom: 8px;
+  margin-bottom: 12px;
   padding: 0.35rem 0.55rem;
   border-radius: 999px;
   background: rgba(255, 255, 255, 0.08);
@@ -328,8 +328,39 @@ button:focus-visible {
   color: var(--cream);
 }
 
+.movie-poster {
+  position: relative;
+  aspect-ratio: 2 / 3;
+  width: 100%;
+  border-radius: 14px;
+  overflow: hidden;
+  margin-bottom: 14px;
+  background: linear-gradient(135deg, rgba(255, 255, 255, 0.08), rgba(0, 0, 0, 0.28));
+  border: 1px solid rgba(216, 181, 120, 0.15);
+}
+
+.movie-poster-image {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  background: linear-gradient(135deg, rgba(216, 181, 120, 0.18), rgba(74, 19, 29, 0.8));
+}
+
+.movie-poster.poster-missing {
+  background: linear-gradient(135deg, rgba(216, 181, 120, 0.12), rgba(74, 19, 29, 0.7));
+  border: 1px solid rgba(216, 181, 120, 0.15);
+}
+
+.movie-card-body {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
 .movie-card h4 {
-  margin-bottom: 8px;
+  margin-bottom: 2px;
   font-size: clamp(1.4rem, 2.1vw, 1.8rem);
   line-height: 1.04;
 }
@@ -347,11 +378,67 @@ button:focus-visible {
   font-weight: 700;
 }
 
+.card-detail-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  color: var(--muted);
+  font-size: 0.7rem;
+}
+
+.card-detail-list span {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.28rem 0.5rem;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(216, 181, 120, 0.12);
+}
+
 .card-explainer {
-  margin-top: 12px;
+  margin: 0;
   color: rgba(245, 239, 227, 0.85);
   font-size: 0.82rem;
   line-height: 1.6;
+}
+
+.clamped-synopsis {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 4;
+  line-clamp: 4;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-height: 6.4em;
+  transition: max-height 0.2s ease;
+}
+
+.card-explainer.expanded {
+  display: block;
+  -webkit-line-clamp: unset;
+  line-clamp: unset;
+  overflow: visible;
+  text-overflow: clip;
+  max-height: none;
+}
+
+.synopsis-toggle {
+  margin-top: 6px;
+  align-self: flex-start;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--gold-soft);
+  font-size: 0.76rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  cursor: pointer;
+}
+
+.synopsis-toggle:hover,
+.synopsis-toggle:focus-visible {
+  color: var(--cream);
+  text-decoration: underline;
 }
 
 .compact-grid {
@@ -459,7 +546,8 @@ button:focus-visible {
   border: 1px solid rgba(216, 181, 120, 0.3);
 }
 
-.chat-message p {
+.chat-message p,
+.chat-message ul {
   margin: 0;
 }
 
@@ -536,6 +624,36 @@ button:focus-visible {
   margin-top: 8px;
 }
 
+.site-footer {
+  width: min(1240px, calc(100% - 32px));
+  margin: 0 auto 24px;
+  padding: 18px 22px;
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  align-items: center;
+  color: var(--muted);
+  border: 1px solid var(--panel-border);
+  border-radius: 18px;
+  background: rgba(17, 11, 12, 0.68);
+}
+
+.site-footer p {
+  margin: 0;
+  font-size: 0.82rem;
+  line-height: 1.5;
+}
+
+.site-footer a {
+  color: var(--gold-soft);
+  text-decoration: none;
+}
+
+.site-footer a:hover,
+.site-footer a:focus-visible {
+  text-decoration: underline;
+}
+
 @media (max-width: 900px) {
   .hero,
   .two-column,
@@ -544,7 +662,8 @@ button:focus-visible {
     grid-template-columns: 1fr;
   }
 
-  .site-header {
+  .site-header,
+  .site-footer {
     flex-direction: column;
     align-items: flex-start;
   }

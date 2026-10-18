@@ -13,6 +13,7 @@ from fastapi.staticfiles import StaticFiles
 from app.graph_analytics_service import GraphAnalyticsService
 from app.movie_assistant_service import MovieAssistantService
 from app.recommendation_service import MovieRecommendationService
+from app.tmdb_service import TMDbService
 
 
 @asynccontextmanager
@@ -21,6 +22,7 @@ async def lifespan(fastapi_app: FastAPI):
     fastapi_app.state.recommendation_service = MovieRecommendationService()
     fastapi_app.state.graph_analytics_service = GraphAnalyticsService()
     fastapi_app.state.movie_assistant_service = MovieAssistantService()
+    fastapi_app.state.tmdb_service = TMDbService()
     try:
         yield
     finally:
@@ -35,6 +37,10 @@ async def lifespan(fastapi_app: FastAPI):
         assistant_service = getattr(fastapi_app.state, "movie_assistant_service", None)
         if assistant_service is not None and hasattr(assistant_service, "driver"):
             assistant_service.driver.close()
+
+        tmdb_service = getattr(fastapi_app.state, "tmdb_service", None)
+        if tmdb_service is not None:
+            tmdb_service._cache.clear()
 
 
 app = FastAPI(title="The Screening Room", lifespan=lifespan)
@@ -90,6 +96,21 @@ def get_movie_assistant_service() -> MovieAssistantService:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Movie assistant service is unavailable.",
+        )
+    return service
+
+
+def get_tmdb_service() -> TMDbService:
+    """Return the TMDb metadata service configured on the app state."""
+    override = app.dependency_overrides.get(get_tmdb_service)
+    if override is not None:
+        return override()
+
+    service = getattr(app.state, "tmdb_service", None)
+    if service is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="TMDb service is unavailable.",
         )
     return service
 
@@ -299,4 +320,24 @@ def ask_movie_assistant(
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Movie assistant service is currently unavailable.",
+        ) from exc
+
+
+@app.get("/movies/{movie_id}/metadata")
+def get_movie_metadata(
+    movie_id: int = Path(..., gt=0),
+    service: TMDbService = Depends(get_tmdb_service),
+):
+    """Return TMDb movie metadata for a MovieLens movie identifier."""
+    try:
+        return service.get_movie_metadata(movie_id)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(exc),
+        ) from exc
+    except RuntimeError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=str(exc),
         ) from exc
