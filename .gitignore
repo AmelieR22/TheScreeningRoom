@@ -46,3 +46,7 @@ neo4j_logs/
 # OS files
 .DS_Store
 Thumbs.db
+
+# Local database backups and temporary test outputs
+backups/
+pytest-*.txt
