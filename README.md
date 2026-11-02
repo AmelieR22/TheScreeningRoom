@@ -16,15 +16,22 @@ The following capabilities are implemented and verified in the current project s
 - Responsive frontend served from the root path
 - Test coverage, lint validation, and Docker startup verification
 
-## Planned Part 2 features
+## Implemented Part 2 features
 
-The following items are not part of the verified Part 1 submission and are explicitly future scope:
+The Screening Room has been extended beyond the initial recommendation engine into an interactive movie discovery and community platform.
 
-- Social graph features and user-to-user social interactions
-- Advanced collaborative filtering beyond the current graph-based recommendation layer
-- Product-grade personalization beyond the implemented historical rating logic
-- Expanded assistant workflows beyond the strict allowlisted read-only design
-- Additional recommendation experiments and longer-term user engagement features
+The additional features include:
+
+- User profiles and personalized movie discovery
+- Movie search and TMDb integration
+- Community and film society features
+- Expanded recommendation and graph analytics services
+- Interactive frontend with HTML, CSS, and JavaScript
+- Additional FastAPI endpoints supporting platform features
+- Extended automated test suite covering profiles, analytics, recommendations, and TMDb integration
+
+These features build on the original Neo4j graph database, recommendation algorithms, GDS analytics, and AI assistant.
+
 
 ## Architecture
 
@@ -396,17 +403,32 @@ If the local app fails to start:
 
 ## Verification baseline
 
-The project has verified baseline results for the Part 1 implementation:
+The completed project has been verified with:
 
-- 50 passing tests
-- 78% coverage
-- Pylint 9.69/10
+- 75 passing automated tests
+- 68% overall code coverage
+- Pylint score of 9.64/10
+- Successful Docker Compose startup
+- Working FastAPI Swagger documentation
+- Successful AI assistant API request (HTTP 200)
+- GitHub development branch, pull request, and merge
 
-These numbers reflect the current working project state and should be used as the baseline for future enhancements.
 
-## Design limitations and Part 2 boundary
 
-This Part 1 implementation is intentionally limited to historical MovieLens data and does not yet model social interactions, follower graphs, or live user activity. The recommendation system is graph-based and rating-driven. Social and behavioral features are prospective Part 2 work, not part of the current verified submission.
+## Current limitations and future improvements
+
+The Screening Room is a functional movie discovery and community platform built using historical MovieLens data.
+
+Current limitations include:
+
+- Recommendations are primarily based on historical ratings rather than real-time viewing activity.
+- The dataset contains 610 users and 9,742 movies, limiting the scale of community analysis.
+- The AI assistant uses five predefined, read-only Cypher query templates rather than unrestricted database queries.
+- TMDb provides additional movie information, while MovieLens remains the main recommendation dataset.
+- The application is designed as an academic prototype rather than a production-ready commercial platform.
+
+Potential future improvements include real-time recommendations, larger datasets, richer social interactions, and more advanced AI-powered discovery.
+
 
 ## Additional documentation
 
