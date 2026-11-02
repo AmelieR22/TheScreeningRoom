@@ -12,11 +12,11 @@ help:
 
 lint:
 	$(PIP) install -r requirements.txt
-	pylint app
+	$(PYTHON) -m pylint --fail-under=9.5 app
 
 test:
 	$(PIP) install -r requirements.txt
-	pytest --maxfail=1 --disable-warnings
+	$(PYTHON) -m pytest --maxfail=1 --disable-warnings
 
 docker-run:
 	docker compose up --build

@@ -14,7 +14,7 @@
       href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@400;500;600;700&family=Inter:wght@400;500;600;700;800&display=swap"
       rel="stylesheet"
     />
-    <link rel="stylesheet" href="/static/styles.css" />
+    <link rel="stylesheet" href="/static/styles.css?v=part2-card-polish-2026-10-18" />
   </head>
   <body>
     <div class="page-shell">
@@ -32,6 +32,9 @@
           <a href="#personalized">For You</a>
           <a href="#analytics">Graph Insights</a>
           <a href="#concierge">Concierge</a>
+          <button type="button" class="nav-action" id="movie-search-open" aria-haspopup="dialog" aria-controls="movie-search-modal">
+            Find Movie ID
+          </button>
         </nav>
       </header>
 
@@ -65,17 +68,75 @@
           </div>
         </section>
 
-        <section id="popular" class="content-section">
-          <div class="section-heading">
-            <div>
-              <p class="eyebrow">House favorites</p>
-              <h3>Popular now</h3>
+        <section class="content-section profile-toolbar">
+          <div class="panel block profile-toolbar-panel">
+            <div class="section-heading compact">
+              <div>
+                <p class="eyebrow">Personal film profile</p>
+                <h3>My Screening Room</h3>
+              </div>
             </div>
-            <button class="mini-button" data-refresh="popular">Refresh</button>
+
+            <div class="profile-selector-row">
+              <div class="selector-wrap">
+                <label for="profile-select">Selected profile</label>
+                <select id="profile-select" aria-label="Select a profile">
+                  <option value="">Choose a profile</option>
+                </select>
+              </div>
+
+              <form id="profile-create-form" class="profile-create-form">
+                <label class="sr-only" for="profile-username-input">New profile name</label>
+                <input
+                  id="profile-username-input"
+                  type="text"
+                  maxlength="40"
+                  placeholder="New profile name"
+                  aria-label="New profile name"
+                />
+                <button type="submit">Create</button>
+              </form>
+            </div>
+
+            <div id="profile-status" class="profile-status" aria-live="polite">
+              Select or create a profile to save your watchlist, reactions, and ratings.
+            </div>
           </div>
-          <div id="popular-results" class="movie-grid" aria-live="polite"></div>
         </section>
 
+        <section id="profile-overview" class="content-section">
+          <div class="panel block profile-overview-panel">
+            <div class="section-heading compact">
+              <div>
+                <p class="eyebrow">Your shelf</p>
+                <h3>My profile</h3>
+              </div>
+            </div>
+
+            <div id="profile-summary" class="profile-summary">
+              Pick a profile to load your film activity.
+            </div>
+
+            <div class="profile-activity-grid">
+              <div class="profile-list-panel">
+                <h4>Watchlist</h4>
+                <div id="profile-watchlist" class="profile-list" aria-live="polite"></div>
+              </div>
+
+              <div class="profile-list-panel">
+                <h4>Liked Movies</h4>
+                <div id="profile-liked" class="profile-list" aria-live="polite"></div>
+              </div>
+
+              <div class="profile-list-panel">
+                <h4>Disliked Movies</h4>
+                <div id="profile-disliked" class="profile-list" aria-live="polite"></div>
+              </div>
+
+              <div class="profile-list-panel">
+                <h4>My Communities</h4>
+                <div id="profile-communities" class="profile-list" aria-live="polite"></div>
+              </div>
         <section id="hidden-gems" class="content-section">
           <div class="section-heading">
             <div>
@@ -96,9 +157,9 @@
               </div>
             </div>
             <form id="personalized-form" class="query-form">
-              <label for="userIdInput">User ID</label>
+              <label for="userIdInput">User ID / Username / Profile ID</label>
               <div class="input-row">
-                <input id="userIdInput" type="number" min="1" step="1" placeholder="e.g. 42" required />
+                <input id="userIdInput" type="text" placeholder="e.g. 42, amelie, or pf_abc123" required />
                 <button type="submit">Load</button>
               </div>
             </form>
@@ -168,9 +229,9 @@
                 </div>
               </div>
               <form id="similar-users-form" class="query-form small-form">
-                <label for="analyticsUserInput">User ID</label>
+                <label for="analyticsUserInput">MovieLens ID / username / profile ID</label>
                 <div class="input-row">
-                  <input id="analyticsUserInput" type="number" min="1" step="1" placeholder="User ID" required />
+                  <input id="analyticsUserInput" type="text" placeholder="e.g. 42, amelie, or pf_a9916765f2a4b978" required />
                   <button type="submit">Reveal</button>
                 </div>
               </form>
@@ -185,6 +246,7 @@
                 </div>
               </div>
               <div id="communities-results" class="list-stack" aria-live="polite"></div>
+              <div id="community-detail" class="community-detail hidden" aria-live="polite"></div>
             </div>
           </div>
         </section>
@@ -201,11 +263,11 @@
             <form id="path-form" class="query-form path-form">
               <div>
                 <label for="pathUserOne">User A</label>
-                <input id="pathUserOne" type="number" min="1" step="1" placeholder="User ID" required />
+                <input id="pathUserOne" type="text" placeholder="User ID, username, or platform ID" required />
               </div>
               <div>
                 <label for="pathUserTwo">User B</label>
-                <input id="pathUserTwo" type="number" min="1" step="1" placeholder="User ID" required />
+                <input id="pathUserTwo" type="text" placeholder="User ID, username, or platform ID" required />
               </div>
               <button type="submit">Find connection</button>
             </form>
@@ -215,6 +277,38 @@
       </main>
     </div>
 
-    <script src="/static/script.js"></script>
+    <div id="movie-search-modal" class="modal hidden" aria-hidden="true">
+      <div class="modal-backdrop" data-close-movie-search></div>
+      <div class="modal-panel" role="dialog" aria-modal="true" aria-labelledby="movie-search-title">
+        <button type="button" class="modal-close" id="movie-search-close" aria-label="Close movie search">×</button>
+        <div class="section-heading compact modal-header">
+          <div>
+            <p class="eyebrow">Movie lookup</p>
+            <h3 id="movie-search-title">Find Movie ID</h3>
+          </div>
+        </div>
+
+        <form id="movie-search-form" class="movie-search-form">
+          <label for="movie-search-input">Search by title</label>
+          <div class="input-row">
+            <input id="movie-search-input" type="search" placeholder="Try 'matrix', 'casablanca', or 'before sunrise'" autocomplete="off" />
+            <button type="submit">Search</button>
+          </div>
+        </form>
+
+        <div id="movie-search-status" class="modal-status" aria-live="polite"></div>
+        <div id="movie-search-results" class="movie-search-results" aria-live="polite"></div>
+      </div>
+    </div>
+
+    <footer class="site-footer">
+      <p>
+        Movie posters and synopses are provided by TMDb. This project uses the TMDb API for metadata
+        display and is not endorsed by TMDb.
+      </p>
+      <a href="https://www.themoviedb.org/" target="_blank" rel="noreferrer">TMDb</a>
+    </footer>
+
+    <script src="/static/script.js?v=part2-card-polish-2026-10-18"></script>
   </body>
 </html>

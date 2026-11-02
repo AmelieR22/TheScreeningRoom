@@ -179,3 +179,41 @@ def test_personalized_recommendations_groups_supporters_by_candidate(service_wit
     assert results[0]["supporter_count"] == 2
     assert set(results[0]["similar_users"]) == {2, 5}
     assert results[0]["source"] == "collaborative"
+
+
+def test_get_platform_profile_recommendations_prioritizes_liked_genres_and_excludes_watched_or_disliked(service_with_mock_driver):
+    service, session = service_with_mock_driver
+    session.run.return_value.data.return_value = [
+        {
+            "movie_id": 44,
+            "title": "Suggested by profile taste",
+            "score": 0.86,
+            "explanation": "Shared genre similarity and audience overlap with your liked films.",
+        }
+    ]
+
+    results = service.get_platform_profile_recommendations(profile_id="pf_test", limit=5)
+
+    assert len(results) == 1
+    assert results[0]["movie_id"] == 44
+    assert results[0]["score"] == 0.86
+    assert "Shared genre" in results[0]["explanation"]
+    assert results[0]["source"] == "platform_profile"
+
+
+def test_get_platform_profile_recommendations_uses_fallback_for_idle_profiles(service_with_mock_driver):
+    service, session = service_with_mock_driver
+    session.run.return_value.data.return_value = [
+        {
+            "movie_id": 12,
+            "title": "Popular fallback",
+            "score": 0.72,
+            "explanation": "Popular fallback: highly rated films to start building your profile.",
+        }
+    ]
+
+    results = service.get_platform_profile_recommendations(profile_id="pf_idle", limit=5)
+
+    assert len(results) == 1
+    assert results[0]["movie_id"] == 12
+    assert "Popular fallback" in results[0]["explanation"]

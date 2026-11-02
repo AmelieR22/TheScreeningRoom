@@ -1,11 +1,34 @@
 const API_BASE = "";
+const PROFILE_STORAGE_KEY = "screening-room-profile-id";
 
 const state = {
   popular: [],
   hidden: [],
   personalized: [],
   similar: [],
+  profileOptions: [],
+  selectedProfileId: localStorage.getItem(PROFILE_STORAGE_KEY) || "",
+  profileActivity: {
+    username: "",
+    platformUserId: "",
+    watchlist: [],
+    watched: [],
+    reactions: [],
+  },
 };
+
+const metadataCache = new Map();
+const metadataInFlight = new Map();
+const MAX_METADATA_CONCURRENCY = 4;
+
+function normalizeText(value, fallback) {
+  if (typeof value !== "string") {
+    return fallback;
+  }
+
+  const trimmed = value.trim();
+  return trimmed || fallback;
+}
 
 function movieGradient(seed) {
   const palettes = [
@@ -23,79 +46,92 @@ function movieGradient(seed) {
   return palettes[index];
 }
 
+function persistMetadataCache() {
+  try {
+    const serializable = Object.fromEntries(Array.from(metadataCache.entries()).map(([key, value]) => [String(key), value]));
+    window.sessionStorage.setItem("tmdb-metadata-cache", JSON.stringify(serializable));
+  } catch (error) {
+    console.warn("TMDb metadata cache could not be persisted.", error);
+  }
+}
+
+function restoreMetadataCache() {
+  try {
+    const rawValue = window.sessionStorage.getItem("tmdb-metadata-cache");
+    if (!rawValue) {
+      return;
+    }
+
+    const parsed = JSON.parse(rawValue);
+    if (!parsed || typeof parsed !== "object") {
+      return;
+    }
+
+    for (const [movieId, payload] of Object.entries(parsed)) {
+      const numericId = Number(movieId);
+      if (Number.isFinite(numericId)) {
+        metadataCache.set(numericId, payload);
+      }
+    }
+  } catch (error) {
+    console.warn("TMDb metadata cache could not be restored.", error);
+  }
+}
+
+restoreMetadataCache();
+
 function setLoading(containerId, message = "Loading...") {
   const element = document.getElementById(containerId);
   if (!element) return;
 
-  element.innerHTML = `
-    <div class="loading-state">
-      <div class="typing-bubble" aria-label="Loading">
-        <span class="dot"></span>
-        <span class="dot"></span>
-        <span class="dot"></span>
-      </div>
-      <div style="margin-top: 8px;">${message}</div>
-    </div>
-  `;
+  element.replaceChildren();
+  const loadingState = document.createElement("div");
+  loadingState.className = "loading-state";
+
+  const bubble = document.createElement("div");
+  bubble.className = "typing-bubble";
+  bubble.setAttribute("aria-label", "Loading");
+
+  for (let i = 0; i < 3; i += 1) {
+    const dot = document.createElement("span");
+    dot.className = "dot";
+    bubble.appendChild(dot);
+  }
+
+  const label = document.createElement("div");
+  label.textContent = message;
+  label.style.marginTop = "8px";
+
+  loadingState.appendChild(bubble);
+  loadingState.appendChild(label);
+  element.appendChild(loadingState);
 }
 
 function setEmptyState(containerId, message) {
   const element = document.getElementById(containerId);
   if (!element) return;
 
-  element.innerHTML = `<div class="empty-state">${message}</div>`;
+  const stateNode = document.createElement("div");
+  stateNode.className = "empty-state";
+  stateNode.textContent = message;
+  element.replaceChildren(stateNode);
 }
 
 function setErrorState(containerId, message) {
   const element = document.getElementById(containerId);
   if (!element) return;
 
-  element.innerHTML = `<div class="error-state">${message}</div>`;
+  const stateNode = document.createElement("div");
+  stateNode.className = "error-state";
+  stateNode.textContent = message;
+  element.replaceChildren(stateNode);
 }
 
-function renderMovieCards(items, containerId, options = {}) {
-  const element = document.getElementById(containerId);
-  if (!element) return;
-
-  if (!Array.isArray(items) || items.length === 0) {
-    setEmptyState(containerId, options.emptyMessage || "No films to recommend yet.");
-    return;
-  }
-
-  const cards = items
-    .map((item, index) => {
-      const movieId = item.movie_id ?? item.id ?? index + 1;
-      const title = item.title || "Untitled film";
-      const score = item.score ?? item.average_rating ?? item.genre_similarity ?? null;
-      const ratingText = score !== null ? `${Number(score).toFixed(2)}` : "Fresh pick";
-      const badge = item.source === "fallback" ? "Fallback" : item.source === "collaborative" ? "Recommended" : "Featured";
-      const explanation = item.explanation || item.summary || "A standout recommendation from the film graph.";
-      const meta = [];
-
-      if (item.average_rating !== undefined) meta.push(`Avg ${Number(item.average_rating).toFixed(2)}`);
-      if (item.rating_count !== undefined) meta.push(`${item.rating_count} ratings`);
-      if (item.supporter_count !== undefined) meta.push(`${item.supporter_count} supporters`);
-      if (item.genre_similarity !== undefined) meta.push(`Genre ${Number(item.genre_similarity).toFixed(2)}`);
-      if (item.audience_similarity !== undefined) meta.push(`Audience ${Number(item.audience_similarity).toFixed(2)}`);
-
-      const gradient = movieGradient(movieId + index);
-
-      return `
-        <article class="movie-card" style="--poster-gradient: ${gradient};">
-          <span class="card-badge">${badge}</span>
-          <h4>${title}</h4>
-          <div class="card-meta">
-            <span>Movie #${movieId}</span>
-            <span class="card-score">${ratingText}</span>
-          </div>
-          ${meta.length ? `<div class="card-meta" style="margin-top: 8px;">${meta.map((entry) => `<span>${entry}</span>`).join("")}</div>` : ""}
-          <div class="card-explainer">${explanation}</div>
-        </article>
-      `;
-    })
-    .join("");
-
-  element.innerHTML = cards;
+function setModalStatus(message, isError = false) {
+  const statusNode = document.getElementById("movie-search-status");
+  if (!statusNode) return;
+  statusNode.textContent = message;
+  statusNode.style.color = isError ? "#e7a6a6" : "#f0d8a4";
 }
 
 async function fetchJson(url, options = {}) {
@@ -111,6 +147,598 @@ async function fetchJson(url, options = {}) {
   }
 
   return response.json();
+}
+
+function buildMovieMeta(item) {
+  const meta = [];
+
+  if (item.average_rating !== undefined) meta.push(`Avg ${Number(item.average_rating).toFixed(2)}`);
+  if (item.rating_count !== undefined) meta.push(`${item.rating_count} ratings`);
+  if (item.supporter_count !== undefined) meta.push(`${item.supporter_count} supporters`);
+  if (item.genre_similarity !== undefined) meta.push(`Genre ${Number(item.genre_similarity).toFixed(2)}`);
+  if (item.audience_similarity !== undefined) meta.push(`Audience ${Number(item.audience_similarity).toFixed(2)}`);
+
+  return meta;
+}
+
+async function getMovieMetadata(movieId) {
+  if (metadataCache.has(movieId)) {
+    return metadataCache.get(movieId);
+  }
+
+  if (metadataInFlight.has(movieId)) {
+    return metadataInFlight.get(movieId);
+  }
+
+  while (metadataInFlight.size >= MAX_METADATA_CONCURRENCY) {
+    await Promise.race(Array.from(metadataInFlight.values()));
+  }
+
+  const request = fetchJson(`${API_BASE}/movies/${movieId}/metadata`)
+    .then((payload) => {
+      metadataCache.set(movieId, payload);
+      persistMetadataCache();
+      return payload;
+    })
+    .catch((error) => {
+      console.warn(`TMDb metadata unavailable for movie ${movieId}:`, error);
+      return null;
+    })
+    .finally(() => {
+      metadataInFlight.delete(movieId);
+    });
+
+  metadataInFlight.set(movieId, request);
+  return request;
+}
+
+function applyPosterState(posterImage, posterWrap) {
+  posterImage.hidden = true;
+  posterWrap.classList.add("poster-missing");
+}
+
+function updateSynopsisToggle(explainer, toggle) {
+  const text = explainer.textContent.trim();
+  if (!text) {
+    toggle.hidden = true;
+    return;
+  }
+
+  const expanded = explainer.classList.contains("expanded");
+  const hasOverflow = explainer.scrollHeight > explainer.clientHeight + 1;
+
+  if (expanded) {
+    toggle.hidden = false;
+    toggle.textContent = "Read less";
+    toggle.setAttribute("aria-expanded", "true");
+    return;
+  }
+
+  const needsToggle = hasOverflow || text.length > 180;
+  toggle.hidden = !needsToggle;
+  toggle.textContent = "Read more";
+  toggle.setAttribute("aria-expanded", "false");
+}
+
+async function hydrateMetadataCard({ movieId, title, posterImage, posterWrap, overview, defaultSummary, toggle }) {
+  const metadata = await getMovieMetadata(movieId);
+  if (!metadata) {
+    applyPosterState(posterImage, posterWrap);
+    overview.textContent = defaultSummary;
+    requestAnimationFrame(() => updateSynopsisToggle(overview, toggle));
+    return;
+  }
+
+  if (metadata.poster_url) {
+    posterWrap.classList.remove("poster-missing");
+    posterImage.src = metadata.poster_url;
+    posterImage.alt = `${title} poster`;
+    posterImage.hidden = false;
+    posterImage.onerror = () => {
+      posterImage.hidden = true;
+      posterWrap.classList.add("poster-missing");
+    };
+  } else {
+    applyPosterState(posterImage, posterWrap);
+  }
+
+  const tmdbOverview = normalizeText(metadata.overview, defaultSummary);
+  overview.textContent = tmdbOverview;
+  requestAnimationFrame(() => updateSynopsisToggle(overview, toggle));
+}
+
+function renderProfileStatus(message, isError = false) {
+  const statusNode = document.getElementById("profile-status");
+  if (!statusNode) return;
+
+  statusNode.textContent = message;
+  statusNode.classList.toggle("error", Boolean(isError));
+}
+
+function renderProfileActivitySummary(data) {
+  const summaryNode = document.getElementById("profile-summary");
+  if (!summaryNode) return;
+
+  if (!data || !data.platformUserId) {
+    summaryNode.textContent = "Pick a profile to load your film activity.";
+    return;
+  }
+
+  const watchlistCount = Array.isArray(data.watchlist) ? data.watchlist.length : 0;
+  const likedCount = (Array.isArray(data.reactions) ? data.reactions : []).filter((item) => String(item.reaction || "").toLowerCase() === "liked").length;
+  const dislikedCount = (Array.isArray(data.reactions) ? data.reactions : []).filter((item) => String(item.reaction || "").toLowerCase() === "disliked").length;
+
+  summaryNode.innerHTML = `
+    <strong>${normalizeText(data.username, "Profile")}</strong>
+    <span>Watchlist: ${watchlistCount}</span>
+    <span>Liked: ${likedCount}</span>
+    <span>Disliked: ${dislikedCount}</span>
+  `;
+}
+
+function renderProfileList(containerId, items, emptyMessage, formatter) {
+  const container = document.getElementById(containerId);
+  if (!container) return;
+
+  container.replaceChildren();
+
+  if (!Array.isArray(items) || items.length === 0) {
+    const empty = document.createElement("div");
+    empty.className = "profile-empty";
+    empty.textContent = emptyMessage;
+    container.appendChild(empty);
+    return;
+  }
+
+  for (const item of items) {
+    const row = document.createElement("div");
+    row.className = "profile-list-item";
+    row.appendChild(formatter(item));
+    container.appendChild(row);
+  }
+}
+
+function renderMyProfile(data) {
+  const profileData = data || { watchlist: [], reactions: [] };
+  const reactions = Array.isArray(profileData.reactions) ? profileData.reactions : [];
+  renderProfileActivitySummary(profileData);
+  renderProfileList("profile-watchlist", profileData.watchlist || [], "No titles on the watchlist yet.", (item) => {
+    const node = document.createElement("span");
+    node.textContent = `${item.title || `Movie ${item.movie_id}`}`;
+    return node;
+  });
+
+  renderProfileList("profile-liked", reactions.filter((item) => String(item.reaction || "").toLowerCase() === "liked"), "No liked movies yet.", (item) => {
+    const node = document.createElement("span");
+    node.textContent = `${item.title || `Movie ${item.movie_id}`}`;
+    return node;
+  });
+
+  renderProfileList("profile-disliked", reactions.filter((item) => String(item.reaction || "").toLowerCase() === "disliked"), "No disliked movies yet.", (item) => {
+    const node = document.createElement("span");
+    node.textContent = `${item.title || `Movie ${item.movie_id}`}`;
+    return node;
+  });
+}
+
+async function loadProfileCommunities(profileId) {
+  const container = document.getElementById("profile-communities");
+  if (!container) return;
+
+  if (!profileId) {
+    renderProfileList("profile-communities", [], "Select a profile to view joined communities.", (item) => {
+      const node = document.createElement("span");
+      node.textContent = item.communityName || `Community ${item.communityId}`;
+      return node;
+    });
+    return;
+  }
+
+  try {
+    const payload = await fetchJson(`${API_BASE}/platform-users/${profileId}/communities`);
+    const items = Array.isArray(payload.items) ? payload.items : [];
+    renderProfileList("profile-communities", items, "No communities joined yet.", (item) => {
+      const node = document.createElement("span");
+      node.textContent = item.communityName || `Community ${item.communityId}`;
+      return node;
+    });
+  } catch (error) {
+    renderProfileList("profile-communities", [], `Could not load joined communities. ${error.message}`, (item) => {
+      const node = document.createElement("span");
+      node.textContent = item.communityName || `Community ${item.communityId}`;
+      return node;
+    });
+  }
+}
+
+function getMovieActionState(movieId, action) {
+  const { watchlist = [], reactions = [] } = state.profileActivity || {};
+
+  const normalizedId = Number(movieId);
+  switch (action) {
+    case "watchlist":
+      return watchlist.some((item) => Number(item.movie_id) === normalizedId);
+    case "liked":
+      return reactions.some((item) => Number(item.movie_id) === normalizedId && String(item.reaction).toLowerCase() === "liked");
+    case "disliked":
+      return reactions.some((item) => Number(item.movie_id) === normalizedId && String(item.reaction).toLowerCase() === "disliked");
+    default:
+      return false;
+  }
+}
+
+function syncMovieCardButtonState(card) {
+  if (!card || !card.dataset.movieId) return;
+  const movieId = Number(card.dataset.movieId);
+  const actionButtons = card.querySelectorAll("[data-profile-action]");
+  actionButtons.forEach((button) => {
+    const action = button.dataset.profileAction;
+    const active = getMovieActionState(movieId, action);
+    button.classList.toggle("active", active);
+    button.disabled = !state.selectedProfileId;
+    const actionLabel = button.dataset.actionLabel || action;
+    const nextText = typeof actionLabel === "string" ? actionLabel : action;
+    if (!button.dataset.defaultLabel) {
+      button.dataset.defaultLabel = button.textContent.trim();
+    }
+    if (action === "liked") {
+      button.textContent = active ? "Liked" : button.dataset.defaultLabel;
+    } else if (action === "disliked") {
+      button.textContent = active ? "Disliked" : button.dataset.defaultLabel;
+    } else {
+      button.textContent = active ? `${nextText} ✓` : button.dataset.defaultLabel;
+    }
+  });
+}
+
+async function loadProfileActivity() {
+  const profileId = state.selectedProfileId;
+  const activityContainer = document.getElementById("profile-summary");
+
+  if (!profileId) {
+    state.profileActivity = { username: "", platformUserId: "", watchlist: [], watched: [], reactions: [] };
+    if (activityContainer) {
+      activityContainer.textContent = "Pick a profile to load your film activity.";
+    }
+    renderProfileList("profile-watchlist", [], "No titles on the watchlist yet.", (item) => {
+      const node = document.createElement("span");
+      node.textContent = `${item.title || `Movie ${item.movie_id}`}`;
+      return node;
+    });
+    renderProfileList("profile-watched", [], "No watched titles yet.", (item) => {
+      const node = document.createElement("span");
+      node.textContent = `${item.title || `Movie ${item.movie_id}`}`;
+      return node;
+    });
+    renderProfileList("profile-reactions", [], "No reactions saved yet.", (item) => {
+      const node = document.createElement("span");
+      node.textContent = `${item.title || `Movie ${item.movie_id}`} · ${item.reaction || "reaction"}`;
+      return node;
+    });
+    document.querySelectorAll(".movie-card").forEach(syncMovieCardButtonState);
+    return;
+  }
+
+  try {
+    const profile = await fetchJson(`${API_BASE}/platform-users/${profileId}/activity`);
+    state.profileActivity = profile;
+    renderMyProfile(profile);
+    await loadProfileCommunities(profileId);
+    renderProfileStatus(`Loaded profile ${profile.username || profile.platformUserId}.`);
+    document.querySelectorAll(".movie-card").forEach(syncMovieCardButtonState);
+  } catch (error) {
+    state.profileActivity = { username: "", platformUserId: "", watchlist: [], watched: [], reactions: [] };
+    renderProfileStatus(`Could not load this profile. ${error.message}`, true);
+    document.querySelectorAll(".movie-card").forEach(syncMovieCardButtonState);
+  }
+}
+
+async function createPlatformProfile(username) {
+  const cleaned = normalizeText(username, "").trim();
+  if (!cleaned) {
+    renderProfileStatus("Profile names must be at least 3 characters long.", true);
+    return;
+  }
+
+  try {
+    const created = await fetchJson(`${API_BASE}/platform-users`, {
+      method: "POST",
+      body: JSON.stringify({ username: cleaned }),
+    });
+
+    await loadPlatformProfiles();
+    state.selectedProfileId = created.platformUserId || created.platformUserId || "";
+    localStorage.setItem(PROFILE_STORAGE_KEY, state.selectedProfileId);
+    const selectNode = document.getElementById("profile-select");
+    if (selectNode) {
+      selectNode.value = state.selectedProfileId;
+    }
+    renderProfileStatus(`Profile ${created.username || cleaned} is ready.`);
+    await loadProfileActivity();
+  } catch (error) {
+    renderProfileStatus(`Could not create this profile. ${error.message}`, true);
+  }
+}
+
+async function loadPlatformProfiles() {
+  try {
+    const payload = await fetchJson(`${API_BASE}/platform-users`);
+    const profiles = Array.isArray(payload.items) ? payload.items : [];
+    state.profileOptions = profiles;
+
+    const selectNode = document.getElementById("profile-select");
+    if (!selectNode) return;
+
+    selectNode.replaceChildren();
+
+    const placeholder = document.createElement("option");
+    placeholder.value = "";
+    placeholder.textContent = profiles.length ? "Choose a profile" : "No profiles yet";
+    selectNode.appendChild(placeholder);
+
+    for (const profile of profiles) {
+      const option = document.createElement("option");
+      option.value = profile.platformUserId;
+      option.textContent = profile.username || profile.platformUserId;
+      selectNode.appendChild(option);
+    }
+
+    if (!state.selectedProfileId && profiles.length) {
+      state.selectedProfileId = profiles[0].platformUserId;
+      localStorage.setItem(PROFILE_STORAGE_KEY, state.selectedProfileId);
+    }
+
+    const matchingProfile = profiles.find((profile) => profile.platformUserId === state.selectedProfileId);
+    if (matchingProfile) {
+      selectNode.value = state.selectedProfileId;
+    } else if (profiles.length) {
+      state.selectedProfileId = profiles[0].platformUserId;
+      localStorage.setItem(PROFILE_STORAGE_KEY, state.selectedProfileId);
+      selectNode.value = state.selectedProfileId;
+    } else {
+      state.selectedProfileId = "";
+      localStorage.removeItem(PROFILE_STORAGE_KEY);
+      selectNode.value = "";
+    }
+
+    const personalizedInput = document.getElementById("userIdInput");
+    if (personalizedInput && personalizedInput.value.trim() === "") {
+      const selectedProfile = profiles.find((profile) => profile.platformUserId === state.selectedProfileId);
+      if (selectedProfile) {
+        personalizedInput.value = selectedProfile.username || selectedProfile.platformUserId;
+      }
+    }
+  } catch (error) {
+    renderProfileStatus(`Profile list could not be loaded. ${error.message}`, true);
+  }
+}
+
+function setSelectedProfile(profileId) {
+  state.selectedProfileId = profileId || "";
+
+  if (profileId) {
+    localStorage.setItem(PROFILE_STORAGE_KEY, profileId);
+  } else {
+    localStorage.removeItem(PROFILE_STORAGE_KEY);
+  }
+
+  const selectNode = document.getElementById("profile-select");
+  if (selectNode) {
+    selectNode.value = profileId || "";
+  }
+
+  const personalizedInput = document.getElementById("userIdInput");
+  if (personalizedInput && personalizedInput.dataset.userEdited !== "true") {
+    const matchedProfile = state.profileOptions.find((profile) => profile.platformUserId === profileId);
+    personalizedInput.value = matchedProfile ? (matchedProfile.username || matchedProfile.platformUserId) : "";
+  }
+
+  if (profileId) {
+    loadProfileActivity();
+    loadProfileCommunities(profileId);
+  } else {
+    renderProfileStatus("Select or create a profile to save your watchlist, reactions, and ratings.");
+    loadProfileCommunities("");
+  }
+}
+
+function createProfileActionButton(label, tone, onClick) {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = `tiny-action ${tone}`;
+  button.textContent = label;
+  button.addEventListener("click", onClick);
+  return button;
+}
+
+async function updateMovieProfileAction(profileId, movieId, action, payload = {}) {
+  if (!profileId) {
+    renderProfileStatus("Select a profile before saving movie actions.", true);
+    return;
+  }
+
+  const actionState = getMovieActionState(movieId, action);
+
+  try {
+    const urlBase = `${API_BASE}/platform-users/${profileId}`;
+    let method = "POST";
+    let url = "";
+    let body = {};
+
+    if (action === "watchlist") {
+      url = `${urlBase}/watchlist`;
+      body = { movie_id: movieId };
+      if (actionState) {
+        method = "DELETE";
+        url = `${urlBase}/watchlist/${movieId}`;
+        body = {};
+      }
+    } else if (action === "liked" || action === "disliked") {
+      url = `${urlBase}/reactions`;
+      body = { movie_id: movieId, reaction: action === "liked" ? "liked" : "disliked" };
+      if (actionState) {
+        method = "DELETE";
+        url = `${urlBase}/reactions/${movieId}`;
+        body = {};
+      }
+    }
+
+    const requestOptions = method === "POST" ? { method, body: JSON.stringify(body) } : { method };
+    await fetchJson(url, requestOptions);
+
+    renderProfileStatus(`Saved to profile ${profileId}.`);
+    await loadProfileActivity();
+  } catch (error) {
+    renderProfileStatus(`Could not save the movie action. ${error.message}`, true);
+  }
+}
+
+function createMovieCard(item, index) {
+  const movieId = item.movie_id ?? item.id ?? index + 1;
+  const title = normalizeText(item.title, "Untitled film");
+  const score = item.score ?? item.average_rating ?? item.genre_similarity ?? null;
+  const ratingText = score !== null ? `${Number(score).toFixed(2)}` : "Fresh pick";
+  const badge = item.source === "fallback" ? "Fallback" : item.source === "collaborative" ? "Recommended" : "Featured";
+  const defaultSummary = normalizeText(
+    item.explanation || item.summary || "A standout recommendation from the film graph.",
+    "A standout recommendation from the film graph.",
+  );
+  const metaItems = buildMovieMeta(item);
+
+  const article = document.createElement("article");
+  article.className = "movie-card";
+  article.dataset.movieId = String(movieId);
+  article.style.setProperty("--poster-gradient", movieGradient(movieId + index));
+
+  const badgeNode = document.createElement("span");
+  badgeNode.className = "card-badge";
+  badgeNode.textContent = badge;
+  article.appendChild(badgeNode);
+
+  const posterWrap = document.createElement("div");
+  posterWrap.className = "movie-poster";
+
+  const posterImage = document.createElement("img");
+  posterImage.className = "movie-poster-image";
+  posterImage.alt = `${title} poster`;
+  posterImage.loading = "lazy";
+  posterImage.decoding = "async";
+  posterImage.hidden = true;
+
+  posterWrap.appendChild(posterImage);
+  article.appendChild(posterWrap);
+
+  const body = document.createElement("div");
+  body.className = "movie-card-body";
+
+  const titleNode = document.createElement("h4");
+  titleNode.textContent = title;
+
+  const metaRow = document.createElement("div");
+  metaRow.className = "card-meta";
+
+  const movieLabel = document.createElement("span");
+  movieLabel.textContent = `Movie #${movieId}`;
+
+  const scoreNode = document.createElement("span");
+  scoreNode.className = "card-score";
+  scoreNode.textContent = ratingText;
+
+  metaRow.appendChild(movieLabel);
+  metaRow.appendChild(scoreNode);
+
+  const detailList = document.createElement("div");
+  detailList.className = "card-detail-list";
+
+  for (const entry of metaItems) {
+    const entryNode = document.createElement("span");
+    entryNode.textContent = entry;
+    detailList.appendChild(entryNode);
+  }
+
+  const explainer = document.createElement("p");
+  explainer.className = "card-explainer clamped-synopsis";
+  explainer.textContent = defaultSummary;
+
+  const synopsisToggle = document.createElement("button");
+  synopsisToggle.type = "button";
+  synopsisToggle.className = "synopsis-toggle";
+  synopsisToggle.hidden = true;
+  synopsisToggle.textContent = "Read more";
+  synopsisToggle.setAttribute("aria-expanded", "false");
+  synopsisToggle.addEventListener("click", () => {
+    const isExpanded = explainer.classList.toggle("expanded");
+    updateSynopsisToggle(explainer, synopsisToggle);
+    if (isExpanded) {
+      explainer.setAttribute("aria-expanded", "true");
+    } else {
+      explainer.setAttribute("aria-expanded", "false");
+    }
+  });
+
+  const actionGroup = document.createElement("div");
+  actionGroup.className = "movie-actions";
+
+  const profileActionButtons = [];
+  const createAction = (label, tone, actionName) => {
+    const button = createProfileActionButton(label, tone, async () => {
+      await updateMovieProfileAction(state.selectedProfileId, movieId, actionName);
+    });
+    button.dataset.profileAction = actionName;
+    button.dataset.actionLabel = label;
+    if (!state.selectedProfileId) {
+      button.disabled = true;
+    }
+    const active = getMovieActionState(movieId, actionName);
+    button.classList.toggle("active", active);
+    profileActionButtons.push(button);
+    return button;
+  };
+
+  profileActionButtons.push(createAction("Watchlist", "neutral", "watchlist"));
+  profileActionButtons.push(createAction("Like", "positive", "liked"));
+  profileActionButtons.push(createAction("Dislike", "negative", "disliked"));
+
+  actionGroup.append(...profileActionButtons);
+
+  body.appendChild(titleNode);
+  body.appendChild(metaRow);
+  if (metaItems.length > 0) {
+    body.appendChild(detailList);
+  }
+  body.appendChild(explainer);
+  body.appendChild(synopsisToggle);
+  body.appendChild(actionGroup);
+  article.appendChild(body);
+
+  void hydrateMetadataCard({
+    movieId,
+    title,
+    posterImage,
+    posterWrap,
+    overview: explainer,
+    defaultSummary,
+    toggle: synopsisToggle,
+  });
+
+  return article;
+}
+
+function renderMovieCards(items, containerId, options = {}) {
+  const element = document.getElementById(containerId);
+  if (!element) return;
+
+  if (!Array.isArray(items) || items.length === 0) {
+    setEmptyState(containerId, options.emptyMessage || "No films to recommend yet.");
+    return;
+  }
+
+  element.replaceChildren();
+
+  for (const [index, item] of items.entries()) {
+    const card = createMovieCard(item, index);
+    element.appendChild(card);
+  }
 }
 
 async function loadSection(sectionKey, url, containerId, emptyMessage) {
@@ -137,17 +765,60 @@ async function loadHiddenGems() {
   await loadSection("hidden", `${API_BASE}/recommendations/hidden-gems?limit=8`, "hidden-gems-results", "No hidden gems were found for this screening.");
 }
 
-async function loadPersonalized(userId) {
-  setLoading("personalized-results", `Loading recommendations for user ${userId}...`);
+async function resolvePlatformProfileLookup(inputValue) {
+  const trimmed = inputValue.trim();
+  if (!trimmed) {
+    throw new Error("Enter a user ID, username, or platform profile ID.");
+  }
+
+  if (trimmed.startsWith("pf_")) {
+    const payload = await fetchJson(`${API_BASE}/platform-users/${trimmed}`);
+    return payload;
+  }
+
+  if (/^\d+$/.test(trimmed)) {
+    return null;
+  }
+
+  const payload = await fetchJson(`${API_BASE}/platform-users/lookup?username=${encodeURIComponent(trimmed)}`);
+  return payload;
+}
+
+async function loadPersonalizedByIdentifier(rawValue) {
+  const value = String(rawValue || "").trim();
+  if (!value) {
+    setErrorState("personalized-results", "Enter a valid MovieLens user ID, platform username, or profile ID.");
+    return;
+  }
+
+  setLoading("personalized-results", `Loading recommendations for ${value}...`);
 
   try {
-    const data = await fetchJson(`${API_BASE}/recommendations/personalized/${userId}?limit=6`);
+    if (/^\d+$/.test(value)) {
+      const numericUserId = Number(value);
+      const data = await fetchJson(`${API_BASE}/recommendations/personalized/${numericUserId}?limit=6`);
+      const items = data.items || [];
+      renderMovieCards(items, "personalized-results", { emptyMessage: `No recommendations available for user ${numericUserId}.` });
+      state.personalized = items;
+      return;
+    }
+
+    const profile = await resolvePlatformProfileLookup(value);
+    if (!profile || !profile.platformUserId) {
+      throw new Error(`No platform profile matched "${value}".`);
+    }
+
+    const data = await fetchJson(`${API_BASE}/recommendations/platform/${profile.platformUserId}?limit=6`);
     const items = data.items || [];
-    renderMovieCards(items, "personalized-results", { emptyMessage: `No recommendations available for user ${userId}.` });
+    renderMovieCards(items, "personalized-results", { emptyMessage: `No personalized profile picks are available for ${profile.username || value}.` });
     state.personalized = items;
   } catch (error) {
-    setErrorState("personalized-results", `Could not load personalized picks for user ${userId}. ${error.message}`);
+    setErrorState("personalized-results", `Could not load personalized picks for "${value}". ${error.message}`);
   }
+}
+
+async function loadPersonalized(userId) {
+  await loadPersonalizedByIdentifier(String(userId));
 }
 
 async function loadSimilar(movieId) {
@@ -175,11 +846,78 @@ async function loadSimilarUsers(userId) {
       return;
     }
 
-    document.getElementById("similar-users-results").innerHTML = items
-      .map((item) => `<div class="analytics-item"><strong>User ${item.user_id}</strong> · similarity <strong>${Number(item.score).toFixed(3)}</strong></div>`)
-      .join("");
+    const container = document.getElementById("similar-users-results");
+    container.replaceChildren();
+
+    for (const item of items) {
+      const row = document.createElement("div");
+      row.className = "analytics-item";
+      const userText = document.createElement("strong");
+      userText.textContent = `User ${item.user_id}`;
+      const similarity = document.createElement("span");
+      similarity.textContent = ` · similarity ${Number(item.score).toFixed(3)}`;
+      row.appendChild(userText);
+      row.appendChild(similarity);
+      container.appendChild(row);
+    }
   } catch (error) {
     setErrorState("similar-users-results", `Similar users could not be loaded. ${error.message}`);
+  }
+}
+
+function buildSampleCommunityDetail(community) {
+  const genres = Array.isArray(community.dominant_genres) && community.dominant_genres.length
+    ? community.dominant_genres
+    : ["illustrative"];
+  const sampleMovie = genres[0] ? `${genres[0]}-leaning film` : "illustrative film";
+
+  return `
+    <div class="community-detail-header">
+      <button type="button" class="community-back" data-community-back>Back to Communities</button>
+    </div>
+    <div class="community-detail-card">
+      <p class="eyebrow">Inferred community</p>
+      <h4>${community.title || `Community ${community.community_id}`}</h4>
+      <p>${community.description || "Inferred from shared film ratings in the graph."}</p>
+      <div class="community-meta-row">
+        <span>${community.user_count ?? (community.user_ids || []).length} inferred members</span>
+        <span>${(community.dominant_genres || []).length ? community.dominant_genres.join(", ") : "Sparse evidence"}</span>
+      </div>
+      <div class="community-demo-section">
+        <h5>Upcoming Community Watch <span class="demo-preview">Preview only</span></h5>
+        <div class="demo-watch-card">
+          <div class="demo-poster" aria-label="Sample film poster">🎬</div>
+          <div>
+            <strong>${sampleMovie}</strong>
+            <p>Example screening: Tue, Apr 22 · 8:30 PM</p>
+            <small>Illustrative preview for a future watch event; no scheduling or RSVP is active.</small>
+          </div>
+        </div>
+      </div>
+      <div class="community-demo-section">
+        <h5>Community Chat</h5>
+        <ul class="demo-chat-list">
+          <li><strong>Demo host:</strong> “We should queue a rainy-night rewatch next.”</li>
+          <li><strong>Member:</strong> “I’m in for a quiet, conversation-led screening.”</li>
+          <li><strong>Member:</strong> “The ${genres[0] || "genre"} picks are getting stronger this week.”</li>
+        </ul>
+        <div class="demo-chat-disabled">Message input disabled in this demo.</div>
+      </div>
+    </div>
+  `;
+}
+
+function openCommunityDetail(community, detail) {
+  if (!detail) return;
+
+  detail.innerHTML = buildSampleCommunityDetail(community);
+  detail.classList.remove("hidden");
+  const backButton = detail.querySelector("[data-community-back]");
+  if (backButton) {
+    backButton.addEventListener("click", () => {
+      detail.classList.add("hidden");
+      detail.innerHTML = "";
+    });
   }
 }
 
@@ -195,12 +933,212 @@ async function loadCommunities() {
       return;
     }
 
-    document.getElementById("communities-results").innerHTML = items
-      .map((community) => `<div class="analytics-item"><strong>Community ${community.community_id}</strong> · ${community.user_count} users · ${community.user_ids.join(", ")}</div>`)
-      .join("");
+    const container = document.getElementById("communities-results");
+    const detail = document.getElementById("community-detail");
+    container.replaceChildren();
+    if (detail) {
+      detail.classList.add("hidden");
+      detail.innerHTML = "";
+    }
+
+    for (const community of items) {
+      const row = document.createElement("div");
+      row.className = "analytics-item community-item";
+
+      const label = document.createElement("button");
+      label.type = "button";
+      label.className = "community-title-button";
+      label.textContent = community.title || `Community ${community.community_id}`;
+      label.setAttribute("aria-label", `Open details for ${community.title || `Community ${community.community_id}`}`);
+      label.addEventListener("click", () => openCommunityDetail(community, detail));
+
+      const summary = document.createElement("div");
+      summary.className = "community-summary";
+      const genreText = Array.isArray(community.dominant_genres) && community.dominant_genres.length
+        ? ` · ${community.dominant_genres.join(", ")}`
+        : " · sparse interest mix";
+      summary.textContent = `${community.user_count ?? (community.user_ids || []).length} inferred users${genreText}`;
+
+      const description = document.createElement("div");
+      description.className = "community-description";
+      description.textContent = community.description || "Inferred from shared film ratings in the graph.";
+
+      const members = Array.isArray(community.user_ids) ? community.user_ids : [];
+      const memberList = document.createElement("div");
+      memberList.className = "community-members";
+      memberList.hidden = true;
+      const memberHeader = document.createElement("div");
+      memberHeader.className = "community-member-header";
+      memberHeader.textContent = "Inferred members";
+      memberList.appendChild(memberHeader);
+
+      const memberChips = document.createElement("div");
+      memberChips.className = "community-member-chips";
+      for (const userId of members) {
+        const chip = document.createElement("span");
+        chip.className = "member-chip";
+        chip.textContent = `User ${userId}`;
+        memberChips.appendChild(chip);
+      }
+      memberList.appendChild(memberChips);
+
+      const toggle = document.createElement("button");
+      toggle.type = "button";
+      toggle.className = "community-toggle";
+      toggle.textContent = members.length > 0 ? "Show members" : "No members";
+      toggle.disabled = members.length === 0;
+      toggle.setAttribute("aria-expanded", "false");
+      toggle.addEventListener("click", () => {
+        const expanded = memberList.hidden;
+        memberList.hidden = !expanded;
+        toggle.textContent = expanded ? "Hide members" : "Show members";
+        toggle.setAttribute("aria-expanded", String(expanded));
+      });
+
+      const actionRow = document.createElement("div");
+      actionRow.className = "community-action-row";
+
+      const membershipButton = document.createElement("button");
+      membershipButton.type = "button";
+      membershipButton.className = "community-action";
+      membershipButton.dataset.joined = "false";
+      membershipButton.textContent = "Join Community";
+      membershipButton.title = state.selectedProfileId ? "Join this community" : "Select a platform profile first";
+
+      const refreshMembershipButton = async () => {
+        if (!state.selectedProfileId) {
+          membershipButton.disabled = true;
+          membershipButton.dataset.joined = "false";
+          membershipButton.textContent = "Join Community";
+          membershipButton.title = "Select a platform profile first";
+          return;
+        }
+
+        try {
+          const payload = await fetchJson(`${API_BASE}/platform-users/${state.selectedProfileId}/communities/${community.community_id}/membership`);
+          const joined = Boolean(payload && payload.joined);
+          membershipButton.disabled = false;
+          membershipButton.dataset.joined = String(joined);
+          membershipButton.textContent = joined ? "Leave Community" : "Join Community";
+          membershipButton.classList.toggle("secondary", joined);
+          membershipButton.title = joined ? "Leave this community" : "Join this community";
+        } catch (error) {
+          membershipButton.disabled = false;
+          membershipButton.dataset.joined = "false";
+          membershipButton.textContent = "Join Community";
+          membershipButton.classList.remove("secondary");
+          membershipButton.title = "Membership status unavailable";
+        }
+      };
+
+      membershipButton.addEventListener("click", async () => {
+        if (!state.selectedProfileId) {
+          renderProfileStatus("Select a platform profile before joining a community.", true);
+          return;
+        }
+
+        const alreadyJoined = membershipButton.dataset.joined === "true";
+        const endpoint = alreadyJoined ? "leave" : "join";
+        const method = alreadyJoined ? "DELETE" : "POST";
+
+        try {
+          const payload = await fetchJson(`${API_BASE}/platform-users/${state.selectedProfileId}/communities/${community.community_id}/${endpoint}`, {
+            method,
+          });
+          const joined = Boolean(payload && payload.joined);
+          membershipButton.dataset.joined = String(joined);
+          membershipButton.textContent = joined ? "Leave Community" : "Join Community";
+          membershipButton.classList.toggle("secondary", joined);
+          membershipButton.title = joined ? "Leave this community" : "Join this community";
+          renderProfileStatus(joined ? `You joined ${community.title || `Community ${community.community_id}`}.` : `You left ${community.title || `Community ${community.community_id}`}.`);
+          await loadProfileCommunities(state.selectedProfileId);
+        } catch (error) {
+          renderProfileStatus(`Could not ${alreadyJoined ? "leave" : "join"} this community. ${error.message}`, true);
+        }
+      });
+
+      const openButton = document.createElement("button");
+      openButton.type = "button";
+      openButton.className = "community-action secondary";
+      openButton.textContent = "Open Community";
+      openButton.addEventListener("click", () => openCommunityDetail(community, detail));
+
+      actionRow.appendChild(openButton);
+      actionRow.appendChild(membershipButton);
+
+      label.setAttribute("type", "button");
+      row.appendChild(label);
+      row.appendChild(summary);
+      row.appendChild(description);
+      row.appendChild(memberList);
+      row.appendChild(actionRow);
+      row.appendChild(toggle);
+      container.appendChild(row);
+
+      refreshMembershipButton();
+    }
   } catch (error) {
     setErrorState("communities-results", `Community data could not be loaded. ${error.message}`);
   }
+}
+
+async function renderPathNode(node) {
+  const nodeItem = document.createElement("div");
+  nodeItem.className = `path-node ${node.type === "Movie" ? "movie-node" : "user-node"}`;
+
+  if (node.type === "Movie") {
+    const posterWrap = document.createElement("div");
+    posterWrap.className = "path-poster";
+
+    const posterImage = document.createElement("img");
+    posterImage.className = "path-poster-image";
+    posterImage.alt = `${normalizeText(node.title, `Movie ${node.id}`)} poster`;
+    posterImage.hidden = true;
+
+    const posterFallback = document.createElement("div");
+    posterFallback.className = "path-poster-fallback";
+    posterFallback.textContent = "🎬";
+
+    posterWrap.appendChild(posterImage);
+    posterWrap.appendChild(posterFallback);
+
+    const copy = document.createElement("div");
+    copy.className = "path-node-copy";
+
+    const title = document.createElement("strong");
+    title.textContent = normalizeText(node.title, `Movie ${node.id}`);
+
+    const details = document.createElement("span");
+    details.textContent = `MovieLens #${node.id}`;
+
+    copy.appendChild(title);
+    copy.appendChild(details);
+    nodeItem.appendChild(posterWrap);
+    nodeItem.appendChild(copy);
+
+    try {
+      const metadata = await getMovieMetadata(Number(node.id));
+      if (metadata && metadata.poster_url) {
+        posterImage.src = metadata.poster_url;
+        posterImage.alt = `${title.textContent} poster`;
+        posterImage.hidden = false;
+        posterFallback.hidden = true;
+        posterImage.onerror = () => {
+          posterImage.hidden = true;
+          posterFallback.hidden = false;
+        };
+      }
+    } catch (error) {
+      console.warn(`No poster metadata available for movie ${node.id}:`, error);
+    }
+
+    return nodeItem;
+  }
+
+  const userLabel = document.createElement("strong");
+  userLabel.textContent = `User ${node.id}`;
+  nodeItem.appendChild(userLabel);
+  return nodeItem;
 }
 
 async function loadPath(userA, userB) {
@@ -214,20 +1152,36 @@ async function loadPath(userA, userB) {
       return;
     }
 
+    const container = document.getElementById("path-results");
+    container.replaceChildren();
+
+    const summary = document.createElement("div");
+    summary.className = "analytics-item";
+    const summaryLabel = document.createElement("strong");
+    summaryLabel.textContent = "Hop count:";
+    const summaryValue = document.createElement("span");
+    summaryValue.textContent = ` ${data.path.hop_count}`;
+    summary.appendChild(summaryLabel);
+    summary.appendChild(summaryValue);
+    container.appendChild(summary);
+
     const nodes = data.path?.nodes || [];
-    const pathFlow = nodes
-      .map((node) => `<span class="path-node">${node.type === "Movie" ? `Movie ${node.id}` : `User ${node.id}`}</span>`)
-      .join('<span aria-hidden="true">→</span>');
+    const flow = document.createElement("div");
+    flow.className = "path-flow";
 
-    const relationships = data.path?.relationships || [];
-    const summary = relationships.length
-      ? `<div class="analytics-item"><strong>Hop count:</strong> ${data.path.hop_count} · <strong>Connections:</strong> ${relationships.length}</div>`
-      : `<div class="analytics-item"><strong>Hop count:</strong> ${data.path.hop_count}</div>`;
+    const renderedNodes = await Promise.all(nodes.map(renderPathNode));
+    renderedNodes.forEach((nodeChip, index) => {
+      flow.appendChild(nodeChip);
+      if (index < renderedNodes.length - 1) {
+        const arrow = document.createElement("span");
+        arrow.className = "path-arrow";
+        arrow.setAttribute("aria-hidden", "true");
+        arrow.textContent = "→";
+        flow.appendChild(arrow);
+      }
+    });
 
-    document.getElementById("path-results").innerHTML = `
-      ${summary}
-      <div class="path-flow">${pathFlow}</div>
-    `;
+    container.appendChild(flow);
   } catch (error) {
     setErrorState("path-results", `Connection path could not be loaded. ${error.message}`);
   }
@@ -235,20 +1189,28 @@ async function loadPath(userA, userB) {
 
 async function askConcierge(question) {
   const chatMessages = document.getElementById("chat-messages");
+
   const userMessage = document.createElement("div");
   userMessage.className = "chat-message user";
-  userMessage.innerHTML = `<p>${question}</p>`;
+  const userParagraph = document.createElement("p");
+  userParagraph.textContent = question;
+  userMessage.appendChild(userParagraph);
   chatMessages.appendChild(userMessage);
 
   const loadingMessage = document.createElement("div");
   loadingMessage.className = "chat-message bot";
-  loadingMessage.innerHTML = `
-    <div class="typing-bubble" aria-label="Thinking">
-      <span class="dot"></span>
-      <span class="dot"></span>
-      <span class="dot"></span>
-    </div>
-  `;
+
+  const loadingBubble = document.createElement("div");
+  loadingBubble.className = "typing-bubble";
+  loadingBubble.setAttribute("aria-label", "Thinking");
+
+  for (let i = 0; i < 3; i += 1) {
+    const dot = document.createElement("span");
+    dot.className = "dot";
+    loadingBubble.appendChild(dot);
+  }
+
+  loadingMessage.appendChild(loadingBubble);
   chatMessages.appendChild(loadingMessage);
 
   try {
@@ -258,27 +1220,163 @@ async function askConcierge(question) {
     });
 
     const results = Array.isArray(data.results) ? data.results : [];
-    const list = results.length
-      ? results
-          .slice(0, 5)
-          .map((movie) => `<li>${movie.title || "Unknown title"} — ${movie.explanation || "A strong recommendation."}</li>`)
-          .join("")
-      : "<li>No matched results were returned.</li>";
+    const list = document.createElement("ul");
 
-    loadingMessage.innerHTML = `
-      <p><strong>Concierge:</strong> ${data.explanation || "Here are the best matches."}</p>
-      <ul>${list}</ul>
-    `;
+    if (results.length > 0) {
+      for (const movie of results.slice(0, 5)) {
+        const item = document.createElement("li");
+        item.textContent = `${movie.title || "Unknown title"} — ${movie.explanation || "A strong recommendation."}`;
+        list.appendChild(item);
+      }
+    } else {
+      const item = document.createElement("li");
+      item.textContent = "No matched results were returned.";
+      list.appendChild(item);
+    }
+
+    const responseMessage = document.createElement("p");
+    const responseLabel = document.createElement("strong");
+    responseLabel.textContent = "Concierge:";
+    responseMessage.appendChild(responseLabel);
+    responseMessage.appendChild(document.createTextNode(` ${data.explanation || "Here are the best matches."}`));
+
+    loadingMessage.replaceChildren(responseMessage, list);
 
     if (results.length > 0) {
       const suggestions = results.slice(0, 3).map((movie) => ({ title: movie.title, score: movie.score || movie.average_rating || 0 }));
       console.log("Assistant results:", suggestions);
     }
   } catch (error) {
-    loadingMessage.innerHTML = `<p><strong>Concierge:</strong> I couldn't answer that request right now. ${error.message}</p>`;
+    const responseMessage = document.createElement("p");
+    const responseLabel = document.createElement("strong");
+    responseLabel.textContent = "Concierge:";
+    responseMessage.appendChild(responseLabel);
+    responseMessage.appendChild(document.createTextNode(` I couldn't answer that request right now. ${error.message}`));
+    loadingMessage.replaceChildren(responseMessage);
   }
 
   chatMessages.scrollTop = chatMessages.scrollHeight;
+}
+
+async function searchMovieIds(query) {
+  const cleaned = String(query || "").trim();
+  const statusNode = document.getElementById("movie-search-status");
+  const resultsNode = document.getElementById("movie-search-results");
+
+  if (!cleaned) {
+    setModalStatus("Enter a movie title to search.", true);
+    setEmptyState("movie-search-results", "Try a title like 'matrix' or 'before sunrise'.");
+    return;
+  }
+
+  setLoading("movie-search-results", `Searching for “${cleaned}”…`);
+  setModalStatus("Looking for matches...");
+
+  try {
+    const data = await fetchJson(`${API_BASE}/movies/search?q=${encodeURIComponent(cleaned)}&limit=8`);
+    const items = Array.isArray(data.items) ? data.items : [];
+
+    if (!items.length) {
+      setModalStatus(`No results found for “${cleaned}”.`, true);
+      setEmptyState("movie-search-results", "No matching movie titles were found.");
+      return;
+    }
+
+    setModalStatus(`Found ${items.length} match${items.length === 1 ? "" : "es"}.`);
+    resultsNode.replaceChildren();
+
+    const rows = await Promise.all(
+      items.map(async (movie) => {
+        const item = document.createElement("div");
+        item.className = "movie-search-result";
+
+        const posterWrap = document.createElement("div");
+        posterWrap.className = "movie-search-poster";
+        const posterImage = document.createElement("img");
+        posterImage.alt = `${movie.title || "Movie"} poster`;
+        posterImage.loading = "lazy";
+        posterImage.hidden = true;
+
+        const fallback = document.createElement("span");
+        fallback.textContent = "🎬";
+        posterWrap.appendChild(posterImage);
+        posterWrap.appendChild(fallback);
+
+        try {
+          const metadata = await getMovieMetadata(Number(movie.movie_id));
+          if (metadata && metadata.poster_url) {
+            posterImage.src = metadata.poster_url;
+            posterImage.hidden = false;
+            fallback.hidden = true;
+            posterImage.onerror = () => {
+              posterImage.hidden = true;
+              fallback.hidden = false;
+            };
+          }
+        } catch (error) {
+          console.warn(`Poster metadata unavailable for movie ${movie.movie_id}:`, error);
+        }
+
+        const meta = document.createElement("div");
+        meta.className = "movie-search-meta";
+
+        const title = document.createElement("strong");
+        title.textContent = movie.title || `Movie ${movie.movie_id}`;
+
+        const details = document.createElement("span");
+        details.textContent = [movie.year ? String(movie.year) : "Unknown year", `MovieLens ID: ${movie.movie_id}`].join(" • ");
+
+        meta.appendChild(title);
+        meta.appendChild(details);
+
+        const copyButton = document.createElement("button");
+        copyButton.type = "button";
+        copyButton.className = "copy-id-button";
+        copyButton.textContent = "Copy ID";
+        copyButton.addEventListener("click", async () => {
+          const value = String(movie.movie_id);
+          try {
+            await navigator.clipboard.writeText(value);
+            setModalStatus(`Copied MovieLens ID ${value}.`);
+            copyButton.textContent = "Copied";
+            window.setTimeout(() => {
+              copyButton.textContent = "Copy ID";
+            }, 1200);
+          } catch (error) {
+            setModalStatus(`Could not copy MovieLens ID ${value}.`, true);
+          }
+        });
+
+        item.appendChild(posterWrap);
+        item.appendChild(meta);
+        item.appendChild(copyButton);
+        return item;
+      }),
+    );
+
+    resultsNode.replaceChildren(...rows);
+  } catch (error) {
+    setModalStatus(`Could not search movie titles. ${error.message}`, true);
+    setErrorState("movie-search-results", `Search failed. ${error.message}`);
+  }
+}
+
+function openMovieSearchModal() {
+  const modal = document.getElementById("movie-search-modal");
+  if (!modal) return;
+  modal.classList.remove("hidden");
+  modal.setAttribute("aria-hidden", "false");
+  const input = document.getElementById("movie-search-input");
+  if (input) {
+    window.setTimeout(() => input.focus(), 60);
+  }
+}
+
+function closeMovieSearchModal() {
+  const modal = document.getElementById("movie-search-modal");
+  if (!modal) return;
+  modal.classList.add("hidden");
+  modal.setAttribute("aria-hidden", "true");
 }
 
 document.addEventListener("DOMContentLoaded", () => {
@@ -290,17 +1388,38 @@ document.addEventListener("DOMContentLoaded", () => {
   loadCommunities();
   loadPath(1, 2);
 
-  document.querySelector("[data-refresh='popular']").addEventListener("click", loadPopular);
-  document.querySelector("[data-refresh='hidden-gems']").addEventListener("click", loadHiddenGems);
+  const refreshPopularButton = document.querySelector("[data-refresh='popular']");
+  const refreshHiddenButton = document.querySelector("[data-refresh='hidden-gems']");
+
+  if (refreshPopularButton) {
+    refreshPopularButton.addEventListener("click", loadPopular);
+  }
+
+  if (refreshHiddenButton) {
+    refreshHiddenButton.addEventListener("click", loadHiddenGems);
+  }
+
+  const personalizedInput = document.getElementById("userIdInput");
+  if (personalizedInput) {
+    personalizedInput.addEventListener("input", () => {
+      personalizedInput.dataset.userEdited = "true";
+    });
+    personalizedInput.addEventListener("focus", () => {
+      if (!personalizedInput.value.trim()) {
+        personalizedInput.dataset.userEdited = "false";
+      }
+    });
+  }
 
   document.getElementById("personalized-form").addEventListener("submit", async (event) => {
     event.preventDefault();
-    const userId = document.getElementById("userIdInput").value;
-    if (!userId || Number(userId) <= 0) {
-      setErrorState("personalized-results", "Enter a valid positive user ID.");
+    const userValue = document.getElementById("userIdInput").value;
+    const trimmed = userValue.trim();
+    if (!trimmed) {
+      setErrorState("personalized-results", "Enter a valid MovieLens user ID, platform username, or profile ID.");
       return;
     }
-    await loadPersonalized(Number(userId));
+    await loadPersonalizedByIdentifier(trimmed);
   });
 
   document.getElementById("similar-form").addEventListener("submit", async (event) => {
@@ -315,26 +1434,89 @@ document.addEventListener("DOMContentLoaded", () => {
 
   document.getElementById("similar-users-form").addEventListener("submit", async (event) => {
     event.preventDefault();
-    const userId = document.getElementById("analyticsUserInput").value;
-    if (!userId || Number(userId) <= 0) {
-      setErrorState("similar-users-results", "Enter a valid positive user ID.");
+    const userId = document.getElementById("analyticsUserInput").value.trim();
+    if (!userId) {
+      setErrorState("similar-users-results", "Enter a valid MovieLens user ID, platform username, or profile ID.");
       return;
     }
-    await loadSimilarUsers(Number(userId));
+    await loadSimilarUsers(userId);
   });
 
   document.getElementById("path-form").addEventListener("submit", async (event) => {
     event.preventDefault();
-    const userA = document.getElementById("pathUserOne").value;
-    const userB = document.getElementById("pathUserTwo").value;
+    const userA = document.getElementById("pathUserOne").value.trim();
+    const userB = document.getElementById("pathUserTwo").value.trim();
 
-    if (!userA || !userB || Number(userA) <= 0 || Number(userB) <= 0) {
-      setErrorState("path-results", "Enter two valid positive user IDs.");
+    if (!userA || !userB) {
+      setErrorState("path-results", "Enter two valid MovieLens user IDs, platform usernames, or platform profile IDs.");
       return;
     }
 
-    await loadPath(Number(userA), Number(userB));
+    await loadPath(userA, userB);
   });
+
+  const movieSearchOpenButton = document.getElementById("movie-search-open");
+  const movieSearchModal = document.getElementById("movie-search-modal");
+  const movieSearchCloseButton = document.getElementById("movie-search-close");
+  const movieSearchForm = document.getElementById("movie-search-form");
+
+  if (movieSearchOpenButton) {
+    movieSearchOpenButton.addEventListener("click", openMovieSearchModal);
+  }
+
+  if (movieSearchCloseButton) {
+    movieSearchCloseButton.addEventListener("click", closeMovieSearchModal);
+  }
+
+  if (movieSearchModal) {
+    movieSearchModal.addEventListener("click", (event) => {
+      if (event.target instanceof HTMLElement && event.target.hasAttribute("data-close-movie-search")) {
+        closeMovieSearchModal();
+      }
+    });
+  }
+
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && movieSearchModal && !movieSearchModal.classList.contains("hidden")) {
+      closeMovieSearchModal();
+    }
+  });
+
+  if (movieSearchForm) {
+    movieSearchForm.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const target = document.getElementById("movie-search-input");
+      await searchMovieIds(target ? target.value : "");
+    });
+  }
+
+  const profileSelect = document.getElementById("profile-select");
+  const profileCreateForm = document.getElementById("profile-create-form");
+
+  if (profileSelect) {
+    profileSelect.addEventListener("change", (event) => {
+      setSelectedProfile(event.target.value);
+    });
+  }
+
+  if (profileCreateForm) {
+    profileCreateForm.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const input = document.getElementById("profile-username-input");
+      const username = input ? input.value : "";
+      if (!username.trim()) {
+        renderProfileStatus("Add a profile name before creating a new profile.", true);
+        return;
+      }
+      input.value = "";
+      await createPlatformProfile(username);
+    });
+  }
+
+  loadPlatformProfiles();
+  if (state.selectedProfileId) {
+    setSelectedProfile(state.selectedProfileId);
+  }
 
   document.getElementById("assistant-form").addEventListener("submit", async (event) => {
     event.preventDefault();

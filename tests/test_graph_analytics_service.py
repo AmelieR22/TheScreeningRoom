@@ -78,7 +78,13 @@ def test_get_user_communities_returns_community_data(service_with_mock_driver):
         {"community_id": 2, "user_count": 1, "user_ids": [42]},
     ]
 
-    session.run.side_effect = [projection_exists, community_result]
+    genre_result = MagicMock()
+    genre_result.data.return_value = [
+        {"genre": "Drama", "genre_count": 5},
+        {"genre": "Comedy", "genre_count": 3},
+    ]
+
+    session.run.side_effect = [projection_exists, community_result, genre_result, genre_result]
 
     results = service.get_user_communities(limit=2)
 
@@ -86,6 +92,33 @@ def test_get_user_communities_returns_community_data(service_with_mock_driver):
     assert results[0]["community_id"] == 1
     assert results[0]["user_count"] == 2
     assert results[0]["user_ids"] == [10, 11]
+    assert results[0]["dominant_genres"] == ["Drama", "Comedy"]
+    assert "Drama" in results[0]["title"]
+    assert "member" in results[0]["description"].lower()
+
+
+def test_get_user_communities_handles_sparse_communities(service_with_mock_driver):
+    service, session = service_with_mock_driver
+
+    projection_exists = MagicMock()
+    projection_exists.data.return_value = [{"projection_exists": True}]
+
+    community_result = MagicMock()
+    community_result.data.return_value = [
+        {"community_id": 7, "user_count": 2, "user_ids": [88, 99]},
+    ]
+
+    empty_genre_result = MagicMock()
+    empty_genre_result.data.return_value = []
+
+    session.run.side_effect = [projection_exists, community_result, empty_genre_result]
+
+    results = service.get_user_communities(limit=2)
+
+    assert len(results) == 1
+    assert results[0]["dominant_genres"] == []
+    assert "Sparse" in results[0]["title"]
+    assert "no genre evidence" in results[0]["description"].lower()
 
 
 def test_get_similar_users_handles_missing_projection(service_with_mock_driver):

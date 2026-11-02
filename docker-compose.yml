@@ -43,6 +43,7 @@ services:
       NEO4J_DATABASE: ${NEO4J_DATABASE:-neo4j}
       OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://ollama:11434}
       OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen2.5:1.5b}
+      TMDB_API_KEY: ${TMDB_API_KEY:-}
     healthcheck:
       test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/health').read()\" || exit 1"]
       interval: 15s

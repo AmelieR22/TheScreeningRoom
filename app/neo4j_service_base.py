@@ -85,3 +85,16 @@ class Neo4jServiceBase:
             return rows
         except Exception as exc:  # pragma: no cover - runtime integration path
             raise RuntimeError(f"Neo4j query failed: {exc}") from exc
+
+    def _run_write_query(
+        self,
+        query: str,
+        parameters: dict[str, Any] | None = None,
+    ) -> list[dict[str, Any]]:
+        try:
+            with self.driver.session(database=self.database) as session:
+                result = session.run(query, parameters or {})
+                rows = result.data()
+            return rows
+        except Exception as exc:  # pragma: no cover - runtime integration path
+            raise RuntimeError(f"Neo4j write query failed: {exc}") from exc
