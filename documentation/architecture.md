@@ -4,17 +4,39 @@
 
 The Screening Room is a graph-backed movie recommendation system built around Neo4j, FastAPI, and a local Ollama integration. The platform ingests the MovieLens latest-small dataset, models the relationships in a graph database, exposes read-only recommendation and analytics endpoints, and finally serves a lightweight frontend at the root URL.
 
-The design is intentionally conservative and beginner-friendly. Part 1 focuses on historical rating data and graph analytics rather than social interactions or live recommendation experiments.
+The project was initially developed as a graph-based recommendation engine (Part 1) and subsequently extended into a movie discovery and community platform (Part 2).
+
+The completed application combines:
+
+- Neo4j graph-based movie recommendations and analytics
+- FastAPI backend services and REST endpoints
+- User profiles and personalized movie discovery
+- Film society and community features
+- TMDb integration for additional movie information
+- Interactive HTML, CSS, and JavaScript frontend
+- Ollama-powered movie assistant with safe, read-only Cypher templates
+
+The architecture separates database access, recommendation logic, graph analytics, user profiles, external movie metadata, and API routing into dedicated services.
 
 ## Runtime architecture
-
 ```mermaid
 flowchart LR
-    User[Browser] --> Frontend[FastAPI static frontend]
-    Frontend --> API[FastAPI routes\nrecommendations / analytics / assistant]
-    API --> Neo4j[Neo4j graph database\nMovieLens graph]
-    API --> GDS[GDS in-memory projection\nNode Similarity + Louvain]
-    API --> Ollama[Ollama LLM\nqwen2.5:1.5b]
+    User[Browser] --> UI[HTML / CSS / JavaScript]
+    UI --> API[FastAPI Backend]
+
+    API --> Rec[Recommendation Service]
+    API --> Profiles[Profiles and Community Service]
+    API --> Analytics[Graph Analytics Service]
+    API --> Assistant[Movie AI Assistant]
+    API --> TMDb[TMDb Metadata Service]
+
+    Rec --> Neo4j[(Neo4j Database)]
+    Profiles --> Neo4j
+    Analytics --> Neo4j
+    Analytics --> GDS[Neo4j GDS]
+    Assistant --> Ollama[Ollama LLM]
+    Assistant --> Neo4j
+    TMDb --> External[TMDb API]
 ```
 
 The app is served by FastAPI and exposes both API routes and a root landing page. The application layer reads from Neo4j, creates or reuses the in-memory GDS projection, and delegates intent classification to Ollama only for the movie assistant workflow.
@@ -148,10 +170,12 @@ The project is therefore a verified graph-based recommendation and analytics bas
 
 ## Verified status
 
-The current implementation is a working Part 1 submission baseline with:
+The completed Screening Room application has:
 
-- 50 passing tests
-- 78% coverage
-- Pylint 9.69/10
-
-These numbers indicate the codebase is stable and the key workflows are verified before adding future Part 2 scope.
+- 75 passing automated tests
+- 68% code coverage
+- Pylint score of 9.64/10
+- Working Docker Compose deployment
+- Functional FastAPI and AI assistant endpoints
+- Implemented movie discovery and community features
+- GitHub version control with branches and a merged pull request
